@@ -4,6 +4,7 @@
 *.key
 
 # Database files (Keeps your data secure and repo clean)
+*.db
 *.sqlite
 *.sqlite3
 
