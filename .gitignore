@@ -1,35 +1,6 @@
-# Sensitive files
+# Track the database for now since it's small and critical for the prototype
+# nba_data.db  <-- WE REMOVE THIS LINE
+
 .env
-*.pem
-*.key
-
-# Database files (Keeps your data secure and repo clean)
-*.sqlite
-*.sqlite3
-
-# Python specific (Prevents Git/AI from reading compiled junk)
 __pycache__/
-*.pyc
-*.pyo
 venv/
-.venv/
-env/
-
-# Dependency folders
-node_modules/
-jspm_packages/
-package-lock.json
-
-# Build outputs
-dist/
-build/
-.next/
-out/
-
-# Operating System files
-.DS_Store
-Thumbs.db
-
-# Cursor/IDE specific
-.vscode/
-.cursorrules

@@ -1,36 +1,7 @@
-# Sensitive files
+# Allow Cursor to see the file exists, but don't index its contents
+# (We remove the *.db line entirely)
+
 .env
 *.pem
-*.key
-
-# Database files (Keeps your data secure and repo clean)
-*.db
-*.sqlite
-*.sqlite3
-
-# Python specific (Prevents Git/AI from reading compiled junk)
 __pycache__/
-*.pyc
-*.pyo
-venv/
-.venv/
-env/
-
-# Dependency folders
 node_modules/
-jspm_packages/
-package-lock.json
-
-# Build outputs
-dist/
-build/
-.next/
-out/
-
-# Operating System files
-.DS_Store
-Thumbs.db
-
-# Cursor/IDE specific
-.vscode/
-.cursorrules
