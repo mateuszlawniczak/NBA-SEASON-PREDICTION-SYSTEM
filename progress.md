@@ -18,19 +18,19 @@ Phase 2: Data Engines (1.1) [ ] Download and test nba_api (Main builder)
 
 Phase 3: Data Collection (2.0) [ ] Team Stats: Pts, ADJ, Net Ratings, Previous Seed/Playoff Outcome
 
-[ ] League Stats: (Pts, Reb, assists, turnovers, steals, blocks, Off/Def Ratings, Pace)
+[x] League Stats: (Pts, Reb, assists, turnovers, steals, blocks, Off/Def Ratings, Pace)
 
-[ ] Player Stats: Simple stats 
+[x] Player Stats: Simple stats 
 
 [ ] Player Stats: Usage, MPG, and total Games Played
 
 Phase 3.2: more data sepecialized
 
-[ ] Player Stats: - Per 100 possessions
+[x] Player Stats: - Per 100 possessions
 
-[ ] Player Stats: Defensive stats (Blocks, Steals, Deflections, Opponent shooting)
+[] Player Stats: Defensive stats (Blocks, Steals, Deflections, Opponent shooting)
 
-[ ] Player Stats: Shooting splits & coverage/contest %
+[x] Player Stats: Shooting splits & coverage/contest %
 
 Phase 3.5: more data specialized 
 
@@ -38,7 +38,7 @@ Phase 3.5: more data specialized
 
 [ ] Coach/System Data: System fit, history, "Spoelstra Effect"
 
-[ ] player_stats_basic: position, height, age, years in league, weight, pts, assists, rebounrds, steals, blocks
+[x] player_stats_basic: position, height, age, years in league, weight, pts, assists, rebounrds, steals, blocks
 
 Phase 4: PR RAW - Individual Formulas (4.0) [ ] Offensive Impact:
 
