@@ -7,7 +7,8 @@ Tables
   team_stats          — Phase 3.0
   league_stats        — Phase 3.0
   player_stats_basic  — Phase 3.0
-  player_stats_advanced — Phase 3.2
+  player_stats_advanced           — Phase 3.2
+  player_stats_advanced_playoffs — Phase 3.2 (postseason)
   rookie_data         — Phase 3.5
   coach_system_data   — Phase 3.5
 """
@@ -155,6 +156,52 @@ CREATE TABLE IF NOT EXISTS player_stats_advanced (
 );
 """
 
+CREATE_PLAYER_STATS_ADVANCED_PLAYOFFS = """
+CREATE TABLE IF NOT EXISTS player_stats_advanced_playoffs (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    season                  TEXT    NOT NULL,
+    player_id               INTEGER NOT NULL,
+    player_name             TEXT    NOT NULL,
+    team_id                 INTEGER,
+    team_abbr               TEXT,
+    position                TEXT,
+
+    pts_per100              REAL,
+    reb_per100              REAL,
+    ast_per100              REAL,
+    tov_per100              REAL,
+    stl_per100              REAL,
+    blk_per100              REAL,
+    fga_per100              REAL,
+    fg3a_per100             REAL,
+    fta_per100              REAL,
+
+    off_reb                 REAL,
+    def_reb                 REAL,
+    def_rating              REAL,
+    deflections             REAL,
+
+    opp_fga_at_rim          REAL,
+    opp_fg_pct_at_rim       REAL,
+    opp_fg3a_contested      REAL,
+    opp_fg3_pct_contested   REAL,
+
+    usg_pct                 REAL,
+
+    ts_pct                  REAL,
+    efg_pct                 REAL,
+    fg_pct_rim              REAL,
+    fg_pct_mid              REAL,
+    fg3_pct_corner          REAL,
+    fg3_pct_above_break     REAL,
+    contested_shot_pct      REAL,
+    open_shot_pct           REAL,
+
+    created_at              TEXT DEFAULT (datetime('now')),
+    UNIQUE (season, player_id, team_id)
+);
+"""
+
 CREATE_ROOKIE_DATA = """
 CREATE TABLE IF NOT EXISTS rookie_data (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -163,13 +210,10 @@ CREATE TABLE IF NOT EXISTS rookie_data (
 
     -- Draft info
     draft_year              INTEGER,
-    draft_round             INTEGER,
+    draft_round             TEXT,                  -- Round number, or 'undrafted'
     draft_pick              INTEGER,               -- Overall pick number
-    drafting_team           TEXT,
+    drafting_signing_team   TEXT,                  -- Drafting team (drafted) or signing team (undrafted)
 
-    -- Origin / background
-    college                 TEXT,                  -- College or "International"
-    country                 TEXT,
     years_pro_before_nba    INTEGER DEFAULT 0,     -- Overseas pro years before draft
 
     -- Projection / potential flags
@@ -182,6 +226,29 @@ CREATE TABLE IF NOT EXISTS rookie_data (
     notes                   TEXT,                  -- Free-text scouting notes
 
     created_at              TEXT DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_ROOKIE_REDSHIRT_DATA = """
+CREATE TABLE IF NOT EXISTS rookie_redshirt_data (
+    player_id       INTEGER PRIMARY KEY,
+    player_name     TEXT    NOT NULL,
+    rookie_season   TEXT    NOT NULL,
+    holmgren_effect INTEGER DEFAULT 0,
+    harper_effect   INTEGER DEFAULT 0,
+    is_redshirt     INTEGER DEFAULT 0,
+    created_at      TEXT    DEFAULT (datetime('now'))
+);
+"""
+
+CREATE_COACH_DATA = """
+CREATE TABLE IF NOT EXISTS coach_data (
+    season              TEXT    NOT NULL,
+    team_id             INTEGER NOT NULL,
+    team_abbr           TEXT    NOT NULL,
+    coach_name          TEXT,
+    created_at          TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (season, team_id)
 );
 """
 
@@ -235,7 +302,12 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_pb_player            ON player_stats_basic  (player_id);",
     "CREATE INDEX IF NOT EXISTS idx_pa_season            ON player_stats_advanced (season);",
     "CREATE INDEX IF NOT EXISTS idx_pa_player            ON player_stats_advanced (player_id);",
+    "CREATE INDEX IF NOT EXISTS idx_pap_season           ON player_stats_advanced_playoffs (season);",
+    "CREATE INDEX IF NOT EXISTS idx_pap_player           ON player_stats_advanced_playoffs (player_id);",
     "CREATE INDEX IF NOT EXISTS idx_rookie_player        ON rookie_data         (player_id);",
+    "CREATE INDEX IF NOT EXISTS idx_redshirt_player      ON rookie_redshirt_data (player_id);",
+    "CREATE INDEX IF NOT EXISTS idx_coach_data_season    ON coach_data          (season);",
+    "CREATE INDEX IF NOT EXISTS idx_coach_data_team      ON coach_data          (team_id);",
     "CREATE INDEX IF NOT EXISTS idx_coach_season         ON coach_system_data   (season);",
     "CREATE INDEX IF NOT EXISTS idx_coach_team           ON coach_system_data   (team_id);",
 ]
@@ -258,8 +330,11 @@ def build_database(db_path: str = DB_PATH) -> None:
         "team_stats":             CREATE_TEAM_STATS,
         "league_stats":           CREATE_LEAGUE_STATS,
         "player_stats_basic":     CREATE_PLAYER_STATS_BASIC,
-        "player_stats_advanced":  CREATE_PLAYER_STATS_ADVANCED,
+        "player_stats_advanced":           CREATE_PLAYER_STATS_ADVANCED,
+        "player_stats_advanced_playoffs": CREATE_PLAYER_STATS_ADVANCED_PLAYOFFS,
         "rookie_data":            CREATE_ROOKIE_DATA,
+        "rookie_redshirt_data":   CREATE_ROOKIE_REDSHIRT_DATA,
+        "coach_data":             CREATE_COACH_DATA,
         "coach_system_data":      CREATE_COACH_SYSTEM_DATA,
     }
 
