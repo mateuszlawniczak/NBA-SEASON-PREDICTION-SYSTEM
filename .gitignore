@@ -4,3 +4,4 @@
 .env
 __pycache__/
 venv/
+.coach_grades_api_cache.json

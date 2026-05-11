@@ -255,9 +255,8 @@ CREATE TABLE IF NOT EXISTS coach_data (
 
 CREATE_COACH_SYSTEM_DATA = """
 CREATE TABLE IF NOT EXISTS coach_system_data (
-    coach_name          TEXT PRIMARY KEY,
-    PR                  REAL,
-    system              TEXT
+    name                TEXT PRIMARY KEY,
+    Grade               TEXT
 );
 """
 

@@ -9,7 +9,7 @@ from init_db import CREATE_COACH_SYSTEM_DATA
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
 
-_EXPECTED_COLS = frozenset({"coach_name", "PR", "system"})
+_EXPECTED_COLS = frozenset({"name", "Grade"})
 
 
 def _ensure_coach_system_schema(cur: sqlite3.Cursor) -> None:
@@ -28,8 +28,8 @@ def main() -> None:
     _ensure_coach_system_schema(cur)
     cur.execute(
         """
-        INSERT OR IGNORE INTO coach_system_data (coach_name, PR, system)
-        SELECT DISTINCT coach_name, NULL, NULL
+        INSERT OR IGNORE INTO coach_system_data (name, Grade)
+        SELECT DISTINCT coach_name, NULL
         FROM coach_data
         WHERE coach_name IS NOT NULL
         """
