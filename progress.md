@@ -12,7 +12,7 @@ NBA Predictor Progress Phase 1: Setup & Defense [x] Create project folder
 
 Phase 2: Data Engines (1.1) [ ] Download and test nba_api (Main builder)
 
-[ ] Setup basketball-reference scraper (Back up plan)
+[ ] Setup basketball-reference scraper (Back up plan) - NOT NEEDED
 
 [x] Initialize SQLite Database (nba_data.db)
 
@@ -20,27 +20,29 @@ Phase 3: Data Collection (2.0) [ ] Team Stats: Pts, ADJ, Net Ratings, Previous S
 
 [x] League Stats: (Pts, Reb, assists, turnovers, steals, blocks, Off/Def Ratings, Pace)
 
-[x] Player Stats: Simple stats 
+[x] Player Stats: Simple stats - FOR PLAY OFFS TOO
 
-[ ] Player Stats: Usage, MPG, and total Games Played
+[X] Player Stats: Usage, MPG, and total Games Played - FOR PLAY OFFS TOO
 
 Phase 3.2: more data sepecialized
 
 [x] Player Stats: - Per 100 possessions
 
-[] Player Stats: Defensive stats (Blocks, Steals, Deflections, Opponent shooting)
+[X] Player Stats: Defensive stats (Blocks, Steals, Deflections, Opponent shooting)
 
 [x] Player Stats: Shooting splits & coverage/contest %
 
 Phase 3.5: more data specialized 
 
-[ ] Rookie Data: Draft position, origin, potential, "Chet/Harper Effect"
+[X] Rookie Data: Draft position, origin, potential, "Chet/Harper Effect"
 
 [ ] Coach/System Data: System fit, history, "Spoelstra Effect"
 
 [x] player_stats_basic: position, height, age, years in league, weight, pts, assists, rebounrds, steals, blocks
 
-Phase 4: PR RAW - Individual Formulas (4.0) [ ] Offensive Impact:
+Phase 4: PR RAW - Individual Formulas (4.0) [ ] 
+
+Offensive Impact:
 
 [ ] Klay Effect (Shooter Gravity)
 
@@ -49,6 +51,7 @@ Phase 4: PR RAW - Individual Formulas (4.0) [ ] Offensive Impact:
 [ ] Offensive Rebounds (Extra possessions)
 
 [ ] TS% (Wasted possessions check)
+
 
 [ ] Defensive Impact:
 

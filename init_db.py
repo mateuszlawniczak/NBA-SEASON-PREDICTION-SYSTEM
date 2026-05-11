@@ -11,6 +11,7 @@ Tables
   player_stats_advanced_playoffs — Phase 3.2 (postseason)
   rookie_data         — Phase 3.5
   coach_system_data   — Phase 3.5
+  team_playstyle_data — team offensive playstyle labels (read-only sources)
 """
 
 import sqlite3
@@ -260,6 +261,18 @@ CREATE TABLE IF NOT EXISTS coach_system_data (
 );
 """
 
+CREATE_TEAM_PLAYSTYLE_DATA = """
+CREATE TABLE IF NOT EXISTS team_playstyle_data (
+    season              TEXT    NOT NULL,
+    team_id             INTEGER NOT NULL,
+    team_abbr           TEXT    NOT NULL,
+    playstyle           TEXT    NOT NULL,
+    all_playstyles      TEXT    NOT NULL,
+
+    PRIMARY KEY (season, team_id)
+);
+"""
+
 
 # ---------------------------------------------------------------------------
 # Index definitions (speed up common join / filter patterns)
@@ -279,6 +292,7 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_redshirt_player      ON rookie_redshirt_data (player_id);",
     "CREATE INDEX IF NOT EXISTS idx_coach_data_season    ON coach_data          (season);",
     "CREATE INDEX IF NOT EXISTS idx_coach_data_team      ON coach_data          (team_id);",
+    "CREATE INDEX IF NOT EXISTS idx_tps_season           ON team_playstyle_data (season);",
 ]
 
 
@@ -305,6 +319,7 @@ def build_database(db_path: str = DB_PATH) -> None:
         "rookie_redshirt_data":   CREATE_ROOKIE_REDSHIRT_DATA,
         "coach_data":             CREATE_COACH_DATA,
         "coach_system_data":      CREATE_COACH_SYSTEM_DATA,
+        "team_playstyle_data":    CREATE_TEAM_PLAYSTYLE_DATA,
     }
 
     for name, ddl in tables.items():
