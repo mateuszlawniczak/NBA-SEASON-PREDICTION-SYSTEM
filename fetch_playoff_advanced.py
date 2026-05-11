@@ -10,14 +10,14 @@ Per SeasonType ("Playoffs" and "Play In"), each parallel worker runs:
     3. LeagueDashPlayerStats  — Advanced PerGame     → def_rating, TS%, EFG%, **USG_PCT**
     4. LeagueDashPlayerStats  — Defense PerGame      → def_reb
     5. LeagueDashPlayerShotLocations                 → zone FG%
-    6. LeagueDashPtDefend Totals — Less Than 6Ft    → opp_fga_at_rim, opp_fg_pct_at_rim
+    6. LeagueDashPtDefend Totals — Less Than 6Ft    → opp_fga_at_rim, opp_fg_at_rim_contested, opp_fg_pct_at_rim
     7. LeagueDashPtDefend Totals — 3 Pointers       → opp_fg3a_contested, opp_fg3_pct_contested
     8. LeagueDashPlayerStats  — Totals Base          → total_minutes (merge weights only)
     9. LeagueHustleStatsPlayer — PerGame             → deflections
   + LeagueDashPlayerPtShot (Totals, 4 buckets × both types) → contested/open shot %
 
 Merge when a player has BOTH Play-In and Playoff rows:
-    • SUM volumes: opp_fga_at_rim, opp_fg3a_contested
+    • SUM volumes: opp_fga_at_rim, opp_fg_at_rim_contested, opp_fg3a_contested
     • MINUTE-weighted rates: opp_fg_pct_at_rim, opp_fg3_pct_contested, usg_pct
           (s_po×min_po + s_pi×min_pi) / (min_po + min_pi)
     • Other stats stay GP-weighted; team/name favour Playoffs.
@@ -89,7 +89,7 @@ GP_WEIGHT_RATE_FIELDS = [
 ]
 
 # Volume stats — SUMMED across Play-In + Playoffs (Totals FGA counts).
-SUM_MERGE_FIELDS = ["opp_fga_at_rim", "opp_fg3a_contested"]
+SUM_MERGE_FIELDS = ["opp_fga_at_rim", "opp_fg_at_rim_contested", "opp_fg3a_contested"]
 
 # Rates merged with minute-weights: (s_po*min_po + s_pi*min_pi) / total_min
 MIN_WEIGHT_RATE_FIELDS = [
@@ -190,6 +190,21 @@ def ensure_playoffs_advanced_schema(con: sqlite3.Connection) -> None:
             con.commit()
             print(f"[schema] Added column {add_col}.", flush=True)
             cols = cols_set()
+
+    if "opp_fg_at_rim_contested" not in cols:
+        cur.execute(
+            "ALTER TABLE player_stats_advanced_playoffs "
+            "ADD COLUMN opp_fg_at_rim_contested REAL"
+        )
+        con.commit()
+        print("[schema] Added column opp_fg_at_rim_contested.", flush=True)
+        cur.execute(
+            "UPDATE player_stats_advanced_playoffs "
+            "SET opp_fg_at_rim_contested = opp_fga_at_rim "
+            "WHERE opp_fga_at_rim IS NOT NULL"
+        )
+        con.commit()
+        print("[schema] Backfilled opp_fg_at_rim_contested from opp_fga_at_rim.", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -492,7 +507,8 @@ def _fetch_rim_defense(season: str, season_type: str) -> dict:
         if pid is None:
             continue
         out[pid] = {
-            "opp_fga_at_rim":     safe_float(row.get("FGA_LT_06")),
+            "opp_fga_at_rim":             safe_float(row.get("FGA_LT_06")),
+            "opp_fg_at_rim_contested":    safe_float(row.get("FGA_LT_06")),
             "opp_fg_pct_at_rim": safe_float(row.get("LT_06_PCT")),
         }
     return out
@@ -626,11 +642,10 @@ def fetch_season_type(season: str, season_type: str) -> dict:
             "off_reb":    bp.get("off_reb"),
             "def_reb":    d.get("def_reb"),
             "def_rating": a.get("def_rating"),
-            "blk_pct":    None,
-            "stl_pct":    None,
             "deflections": h.get("deflections"),
 
             "opp_fga_at_rim":        rd.get("opp_fga_at_rim"),
+            "opp_fg_at_rim_contested": rd.get("opp_fg_at_rim_contested"),
             "opp_fg_pct_at_rim":     rd.get("opp_fg_pct_at_rim"),
             "opp_fg3a_contested":    td.get("opp_fg3a_contested"),
             "opp_fg3_pct_contested": td.get("opp_fg3_pct_contested"),
@@ -821,7 +836,7 @@ INSERT INTO player_stats_advanced_playoffs (
     pts_per100, reb_per100, ast_per100, tov_per100, stl_per100, blk_per100,
     fga_per100, fg3a_per100, fta_per100,
     off_reb, def_reb, def_rating, deflections,
-    opp_fga_at_rim, opp_fg_pct_at_rim,
+    opp_fga_at_rim, opp_fg_at_rim_contested, opp_fg_pct_at_rim,
     opp_fg3a_contested, opp_fg3_pct_contested,
     usg_pct,
     ts_pct, efg_pct,
@@ -832,7 +847,7 @@ INSERT INTO player_stats_advanced_playoffs (
     :pts_per100, :reb_per100, :ast_per100, :tov_per100, :stl_per100, :blk_per100,
     :fga_per100, :fg3a_per100, :fta_per100,
     :off_reb, :def_reb, :def_rating, :deflections,
-    :opp_fga_at_rim, :opp_fg_pct_at_rim,
+    :opp_fga_at_rim, :opp_fg_at_rim_contested, :opp_fg_pct_at_rim,
     :opp_fg3a_contested, :opp_fg3_pct_contested,
     :usg_pct,
     :ts_pct, :efg_pct,
@@ -857,6 +872,7 @@ ON CONFLICT (season, player_id, team_id) DO UPDATE SET
     def_rating              = excluded.def_rating,
     deflections             = excluded.deflections,
     opp_fga_at_rim          = excluded.opp_fga_at_rim,
+    opp_fg_at_rim_contested = excluded.opp_fg_at_rim_contested,
     opp_fg_pct_at_rim       = excluded.opp_fg_pct_at_rim,
     opp_fg3a_contested      = excluded.opp_fg3a_contested,
     opp_fg3_pct_contested   = excluded.opp_fg3_pct_contested,

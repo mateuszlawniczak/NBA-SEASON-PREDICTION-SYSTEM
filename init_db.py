@@ -135,11 +135,11 @@ CREATE TABLE IF NOT EXISTS player_stats_advanced (
     -- Defensive stats (Phase 3.2)
     def_reb             REAL,                      -- Defensive rebounds
     def_rating          REAL,                      -- Individual defensive rating
-    blk_pct             REAL,                      -- Block percentage
-    stl_pct             REAL,                      -- Steal percentage
-    deflections         REAL,                      -- Deflections per game
-    opp_fg_pct_at_rim   REAL,                      -- Opponent FG% at rim when defending
-    opp_fg3_pct_contested REAL,                    -- Opp 3P% on contested shots
+    deflections               REAL,                 -- Deflections per game
+    opp_fg_pct_at_rim         REAL,                 -- Opponent FG% at rim (<6 ft) as primary defender
+    opp_fg_at_rim_contested   REAL,                 -- Opponent FGA at rim per game (same tracking as %)
+    opp_fg3_contests_attempts REAL,                 -- Opponent 3PA per game you defend (tracking)
+    opp_fg3_pct_contested     REAL,                 -- Opponent 3P% on those defended 3s
 
     -- Shooting splits & coverage (Phase 3.2)
     ts_pct              REAL,                      -- True shooting %
@@ -182,6 +182,7 @@ CREATE TABLE IF NOT EXISTS player_stats_advanced_playoffs (
     deflections             REAL,
 
     opp_fga_at_rim          REAL,
+    opp_fg_at_rim_contested REAL,                  -- Same volume as opp_fga_at_rim (NBA tracking)
     opp_fg_pct_at_rim       REAL,
     opp_fg3a_contested      REAL,
     opp_fg3_pct_contested   REAL,

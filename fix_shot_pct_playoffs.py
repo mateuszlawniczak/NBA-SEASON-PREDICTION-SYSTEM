@@ -4,6 +4,10 @@ fix_shot_pct_playoffs.py
 Corrects contested_shot_pct and populates open_shot_pct in
 player_stats_advanced_playoffs using NBA tracking data.
 
+Superseded for ongoing use by **fix_offensive_tracking_playoffs.py**, which also
+refreshes `off_reb` and uses the same open+contested complement rounding as the
+regular-season fix. You can keep this file for reference or remove it.
+
 Root cause (same bug as the regular-season table)
 --------------------------------------------------
 The original fetch used the Hustle endpoint and computed:

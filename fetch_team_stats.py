@@ -1,7 +1,7 @@
 """
 fetch_team_stats.py
 -------------------
-Fills team_stats in nba_data.db for seasons 2019-20 through 2025-26.
+Fills team_stats in nba_data.db for seasons 2020-21 through 2025-26.
 
 API calls per season (4 total):
   1. LeagueDashTeamStats  — PerGame Base       -> pts_per_game, wins, losses, win_pct
@@ -40,7 +40,6 @@ from nba_api.stats.static import teams as nba_teams
 DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
 
 SEASONS = [
-    "2019-20",
     "2020-21",
     "2021-22",
     "2022-23",
