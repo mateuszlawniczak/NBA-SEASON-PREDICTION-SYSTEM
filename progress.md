@@ -36,13 +36,14 @@ Phase 3.5: more data specialized
 
 [X] Rookie Data: Draft position, origin, potential, "Chet/Harper Effect"
 
-[ ] Coach/System Data: System fit, history, "Spoelstra Effect"
+[X] Coach/System Data: System fit, history, "Spoelstra Effect"
 
 [x] player_stats_basic: position, height, age, years in league, weight, pts, assists, rebounrds, steals, blocks
 
 Phase 4: PR RAW - Individual Formulas (4.0) [ ] 
 
 Offensive Impact:
+
 
 [ ] Klay Effect (Shooter Gravity)
 
@@ -59,9 +60,11 @@ Offensive Impact:
 
 [ ] Blocks/Steals/Deflections ratio per position
 
+
 [ ] Progression/Age:
 
 [ ] Age, Experience, and "Was he healthy?" check
+
 
 [ ] Playmaking: Assists logic
 
