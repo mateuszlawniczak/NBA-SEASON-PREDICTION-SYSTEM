@@ -10,15 +10,16 @@ Per SeasonType ("Playoffs" and "Play In"), each parallel worker runs:
     3. LeagueDashPlayerStats  — Advanced PerGame     → def_rating, TS%, EFG%, **USG_PCT**
     4. LeagueDashPlayerStats  — Defense PerGame      → def_reb
     5. LeagueDashPlayerShotLocations                 → zone FG%
-    6. LeagueDashPtDefend Totals — Less Than 6Ft    → opp_fga_at_rim, opp_fg_at_rim_contested, opp_fg_pct_at_rim
-    7. LeagueDashPtDefend Totals — 3 Pointers       → opp_fg3a_contested, opp_fg3_pct_contested
+    6. LeagueDashPtDefend Totals — Less Than 6Ft    → opp_fg_at_rim_contested (FGA); rim opp FG% merged from FGM/FGA
+    7. LeagueDashPtDefend Totals — 3 Pointers       → opp_fg3a_contested; 3P opp FG% merged from FG3M/FG3A
     8. LeagueDashPlayerStats  — Totals Base          → total_minutes (merge weights only)
     9. LeagueHustleStatsPlayer — PerGame             → deflections
   + LeagueDashPlayerPtShot (Totals, 4 buckets × both types) → contested/open shot %
 
 Merge when a player has BOTH Play-In and Playoff rows:
-    • SUM volumes: opp_fga_at_rim, opp_fg_at_rim_contested, opp_fg3a_contested
-    • MINUTE-weighted rates: opp_fg_pct_at_rim, opp_fg3_pct_contested, usg_pct
+    • SUM volumes: opp_fg_at_rim_contested, opp_fg3a_contested
+    • Opponent FG% at rim / on 3s: Totals FGM/FGA combined across Playoffs + Play-In
+    • MINUTE-weighted rates: usg_pct
           (s_po×min_po + s_pi×min_pi) / (min_po + min_pi)
     • Other stats stay GP-weighted; team/name favour Playoffs.
 
@@ -89,14 +90,17 @@ GP_WEIGHT_RATE_FIELDS = [
 ]
 
 # Volume stats — SUMMED across Play-In + Playoffs (Totals FGA counts).
-SUM_MERGE_FIELDS = ["opp_fga_at_rim", "opp_fg_at_rim_contested", "opp_fg3a_contested"]
+SUM_MERGE_FIELDS = [
+    "opp_fg_at_rim_contested",
+    "opp_fg3a_contested",
+]
 
 # Rates merged with minute-weights: (s_po*min_po + s_pi*min_pi) / total_min
 MIN_WEIGHT_RATE_FIELDS = [
-    "opp_fg_pct_at_rim",
-    "opp_fg3_pct_contested",
     "usg_pct",
 ]
+
+OPP_DEF_FG_PCT_FIELDS = ["opp_fg_pct_at_rim_contested", "opp_fg3_pct_contested"]
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +186,17 @@ def ensure_playoffs_advanced_schema(con: sqlite3.Connection) -> None:
         con.commit()
         print("[schema] Renamed opp_fg3_pct_contested → opp_fg3a_contested.", flush=True)
         cols = cols_set()
-    for add_col in ("opp_fg_pct_at_rim", "opp_fg3_pct_contested", "usg_pct"):
+
+    if "opp_fg_pct_at_rim_contested" not in cols and "opp_fg_pct_at_rim" in cols:
+        cur.execute(
+            "ALTER TABLE player_stats_advanced_playoffs "
+            "RENAME COLUMN opp_fg_pct_at_rim TO opp_fg_pct_at_rim_contested"
+        )
+        con.commit()
+        print("[schema] Renamed opp_fg_pct_at_rim → opp_fg_pct_at_rim_contested.", flush=True)
+        cols = cols_set()
+
+    for add_col in ("opp_fg_pct_at_rim_contested", "opp_fg3_pct_contested", "usg_pct"):
         if add_col not in cols:
             cur.execute(
                 f"ALTER TABLE player_stats_advanced_playoffs ADD COLUMN {add_col} REAL"
@@ -198,13 +212,23 @@ def ensure_playoffs_advanced_schema(con: sqlite3.Connection) -> None:
         )
         con.commit()
         print("[schema] Added column opp_fg_at_rim_contested.", flush=True)
+        cols = cols_set()
+        if "opp_fga_at_rim" in cols:
+            cur.execute(
+                "UPDATE player_stats_advanced_playoffs "
+                "SET opp_fg_at_rim_contested = opp_fga_at_rim "
+                "WHERE opp_fga_at_rim IS NOT NULL AND opp_fg_at_rim_contested IS NULL"
+            )
+            con.commit()
+            print("[schema] Backfilled opp_fg_at_rim_contested from opp_fga_at_rim.", flush=True)
+
+    cols = cols_set()
+    if "opp_fga_at_rim" in cols:
         cur.execute(
-            "UPDATE player_stats_advanced_playoffs "
-            "SET opp_fg_at_rim_contested = opp_fga_at_rim "
-            "WHERE opp_fga_at_rim IS NOT NULL"
+            "ALTER TABLE player_stats_advanced_playoffs DROP COLUMN opp_fga_at_rim"
         )
         con.commit()
-        print("[schema] Backfilled opp_fg_at_rim_contested from opp_fga_at_rim.", flush=True)
+        print("[schema] Dropped column opp_fga_at_rim.", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -507,9 +531,9 @@ def _fetch_rim_defense(season: str, season_type: str) -> dict:
         if pid is None:
             continue
         out[pid] = {
-            "opp_fga_at_rim":             safe_float(row.get("FGA_LT_06")),
-            "opp_fg_at_rim_contested":    safe_float(row.get("FGA_LT_06")),
-            "opp_fg_pct_at_rim": safe_float(row.get("LT_06_PCT")),
+            "opp_fg_at_rim_contested":         safe_float(row.get("FGA_LT_06")),
+            "_rim_fgm":                        safe_float(row.get("FGM_LT_06")),
+            "_rim_fga":                        safe_float(row.get("FGA_LT_06")),
         }
     return out
 
@@ -540,7 +564,8 @@ def _fetch_three_pt_defense(season: str, season_type: str) -> dict:
             continue
         out[pid] = {
             "opp_fg3a_contested":    safe_float(row.get("FG3A")),
-            "opp_fg3_pct_contested": safe_float(row.get("FG3_PCT")),
+            "_fg3m":                 safe_float(row.get("FG3M")),
+            "_fg3a":                 safe_float(row.get("FG3A")),
         }
     return out
 
@@ -644,11 +669,12 @@ def fetch_season_type(season: str, season_type: str) -> dict:
             "def_rating": a.get("def_rating"),
             "deflections": h.get("deflections"),
 
-            "opp_fga_at_rim":        rd.get("opp_fga_at_rim"),
             "opp_fg_at_rim_contested": rd.get("opp_fg_at_rim_contested"),
-            "opp_fg_pct_at_rim":     rd.get("opp_fg_pct_at_rim"),
             "opp_fg3a_contested":    td.get("opp_fg3a_contested"),
-            "opp_fg3_pct_contested": td.get("opp_fg3_pct_contested"),
+            "_rim_fgm":              rd.get("_rim_fgm"),
+            "_rim_fga":              rd.get("_rim_fga"),
+            "_fg3m":                 td.get("_fg3m"),
+            "_fg3a":                 td.get("_fg3a"),
 
             "usg_pct":    a.get("usg_pct"),
             "total_min":  tm.get("total_min"),
@@ -676,6 +702,30 @@ def merge_volume_field(va, vb) -> float | None:
     if va is None and vb is None:
         return None
     return (va or 0.0) + (vb or 0.0)
+
+
+def merged_opp_fg_pct(
+    po_rec: dict | None,
+    pi_rec: dict | None,
+    fgm_key: str,
+    fga_key: str,
+) -> float | None:
+    """Opponent FG% from Totals FGM/FGA (Playoffs + Play-In combined when both exist)."""
+    if po_rec is not None and pi_rec is not None:
+        fgm = (po_rec.get(fgm_key) or 0.0) + (pi_rec.get(fgm_key) or 0.0)
+        fga = (po_rec.get(fga_key) or 0.0) + (pi_rec.get(fga_key) or 0.0)
+    elif po_rec is not None:
+        fgm = po_rec.get(fgm_key) or 0.0
+        fga = po_rec.get(fga_key) or 0.0
+    elif pi_rec is not None:
+        fgm = pi_rec.get(fgm_key) or 0.0
+        fga = pi_rec.get(fga_key) or 0.0
+    else:
+        return None
+    if fga > 0:
+        x = float(fgm) / float(fga)
+        return round(max(0.0, min(1.0, x)), 4)
+    return None
 
 
 def merge_minute_weighted_rates(po: dict, pi: dict, field: str) -> float | None:
@@ -730,6 +780,17 @@ def merge_season_types(playoffs: dict, playin: dict) -> dict:
             rec = dict(playoffs[pid])
         else:
             rec = dict(playin[pid])
+
+        po_ref = playoffs.get(pid)
+        pi_ref = playin.get(pid)
+        rec["opp_fg_pct_at_rim_contested"] = merged_opp_fg_pct(
+            po_ref, pi_ref, "_rim_fgm", "_rim_fga"
+        )
+        rec["opp_fg3_pct_contested"] = merged_opp_fg_pct(
+            po_ref, pi_ref, "_fg3m", "_fg3a"
+        )
+        for k in ("_rim_fgm", "_rim_fga", "_fg3m", "_fg3a"):
+            rec.pop(k, None)
 
         rec.pop("total_min", None)
         merged[pid] = rec
@@ -836,7 +897,7 @@ INSERT INTO player_stats_advanced_playoffs (
     pts_per100, reb_per100, ast_per100, tov_per100, stl_per100, blk_per100,
     fga_per100, fg3a_per100, fta_per100,
     off_reb, def_reb, def_rating, deflections,
-    opp_fga_at_rim, opp_fg_at_rim_contested, opp_fg_pct_at_rim,
+    opp_fg_at_rim_contested, opp_fg_pct_at_rim_contested,
     opp_fg3a_contested, opp_fg3_pct_contested,
     usg_pct,
     ts_pct, efg_pct,
@@ -847,7 +908,7 @@ INSERT INTO player_stats_advanced_playoffs (
     :pts_per100, :reb_per100, :ast_per100, :tov_per100, :stl_per100, :blk_per100,
     :fga_per100, :fg3a_per100, :fta_per100,
     :off_reb, :def_reb, :def_rating, :deflections,
-    :opp_fga_at_rim, :opp_fg_at_rim_contested, :opp_fg_pct_at_rim,
+    :opp_fg_at_rim_contested, :opp_fg_pct_at_rim_contested,
     :opp_fg3a_contested, :opp_fg3_pct_contested,
     :usg_pct,
     :ts_pct, :efg_pct,
@@ -871,9 +932,8 @@ ON CONFLICT (season, player_id, team_id) DO UPDATE SET
     def_reb                 = excluded.def_reb,
     def_rating              = excluded.def_rating,
     deflections             = excluded.deflections,
-    opp_fga_at_rim          = excluded.opp_fga_at_rim,
     opp_fg_at_rim_contested = excluded.opp_fg_at_rim_contested,
-    opp_fg_pct_at_rim       = excluded.opp_fg_pct_at_rim,
+    opp_fg_pct_at_rim_contested = excluded.opp_fg_pct_at_rim_contested,
     opp_fg3a_contested      = excluded.opp_fg3a_contested,
     opp_fg3_pct_contested   = excluded.opp_fg3_pct_contested,
     usg_pct                 = excluded.usg_pct,
@@ -915,6 +975,7 @@ def upsert_season(
             "position":    pos_map.get(pid),
             **{f: rec.get(f) for f in GP_WEIGHT_RATE_FIELDS},
             **{f: rec.get(f) for f in SUM_MERGE_FIELDS},
+            **{f: rec.get(f) for f in OPP_DEF_FG_PCT_FIELDS},
             **{f: rec.get(f) for f in MIN_WEIGHT_RATE_FIELDS},
             "contested_shot_pct": sc.get("contested_shot_pct"),
             "open_shot_pct":      sc.get("open_shot_pct"),
@@ -973,8 +1034,8 @@ def run(force: bool = False) -> None:
             both    = len(set(po_data) & set(pi_data))
             print(f"\n  [merge]  Playoffs-only={po_only}  PlayIn-only={pi_only}  Both={both}", flush=True)
             print(
-                "  [merge]  Volumes SUM (rim FGA, 3PA contested); "
-                "rates MIN-weighted (rim FG%, 3P%, USG%).",
+                "  [merge]  Volumes SUM (rim / 3PA contested attempts); "
+                "opponent FG% from Totals FGM/FGA; USG% MIN-weighted.",
                 flush=True,
             )
 

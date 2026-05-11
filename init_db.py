@@ -181,11 +181,10 @@ CREATE TABLE IF NOT EXISTS player_stats_advanced_playoffs (
     def_rating              REAL,
     deflections             REAL,
 
-    opp_fga_at_rim          REAL,
-    opp_fg_at_rim_contested REAL,                  -- Same volume as opp_fga_at_rim (NBA tracking)
-    opp_fg_pct_at_rim       REAL,
+    opp_fg_at_rim_contested REAL,                  -- Opponent FGA at rim (<6 ft), closest defender (Totals)
+    opp_fg_pct_at_rim_contested REAL,             -- Opponent FG% at rim (0–1), from defend tracking FGM/FGA
     opp_fg3a_contested      REAL,
-    opp_fg3_pct_contested   REAL,
+    opp_fg3_pct_contested   REAL,                  -- Opponent FG3% on defended 3s (0–1)
 
     usg_pct                 REAL,
 
@@ -255,38 +254,9 @@ CREATE TABLE IF NOT EXISTS coach_data (
 
 CREATE_COACH_SYSTEM_DATA = """
 CREATE TABLE IF NOT EXISTS coach_system_data (
-    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-    season                  TEXT    NOT NULL,
-    team_id                 INTEGER NOT NULL,
-    team_abbr               TEXT    NOT NULL,
-    team_name               TEXT    NOT NULL,
-
-    -- Coach info
-    head_coach              TEXT    NOT NULL,
-    coaching_experience_yrs INTEGER,              -- Total NBA head coaching years
-    seasons_with_team       INTEGER,              -- Seasons with current team
-
-    -- System / scheme
-    primary_offense         TEXT,                 -- e.g. "Motion Offense", "Pick & Roll Heavy"
-    primary_defense         TEXT,                 -- e.g. "Drop Coverage", "Switching Man"
-    pace_tendency           TEXT,                 -- "Fast", "Average", "Slow"
-    three_point_heavy       INTEGER DEFAULT 0,    -- 1 = high 3PA philosophy
-
-    -- Fit rating (human-entered or model-derived, 1–10)
-    system_fit_rating       REAL,
-
-    -- Special effect flags (Phase 3.5 / Phase 5.0)
-    spoelstra_effect        INTEGER DEFAULT 0,    -- 1 = elite player-development coach
-    spurs_effect            INTEGER DEFAULT 0,    -- 1 = system continuity / culture
-    bulls_effect            INTEGER DEFAULT 0,    -- 1 = strong continuity bonus
-    suns_effect             INTEGER DEFAULT 0,    -- 1 = offensive role specialization
-    pistons_effect          INTEGER DEFAULT 0,    -- 1 = defensive role specialization
-    okc_effect              INTEGER DEFAULT 0,    -- 1 = age/experience curve boost
-
-    notes                   TEXT,
-
-    created_at              TEXT DEFAULT (datetime('now')),
-    UNIQUE (season, team_id)
+    coach_name          TEXT PRIMARY KEY,
+    PR                  REAL,
+    system              TEXT
 );
 """
 
@@ -309,8 +279,6 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_redshirt_player      ON rookie_redshirt_data (player_id);",
     "CREATE INDEX IF NOT EXISTS idx_coach_data_season    ON coach_data          (season);",
     "CREATE INDEX IF NOT EXISTS idx_coach_data_team      ON coach_data          (team_id);",
-    "CREATE INDEX IF NOT EXISTS idx_coach_season         ON coach_system_data   (season);",
-    "CREATE INDEX IF NOT EXISTS idx_coach_team           ON coach_system_data   (team_id);",
 ]
 
 
