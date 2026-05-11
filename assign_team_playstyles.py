@@ -2,7 +2,8 @@
 assign_team_playstyles.py
 -------------------------
 Classifies offensive playstyles with dual thresholds. Perfect requires **three or more**
-identified systems **and** **net_rating ≥ 4.5**. There is no Elite Balanced tier;
+identified systems, **net_rating ≥ 5.0**, and **team turnover metric ≤ 14.0** (see
+`team_tov_pct` on team_stats when present, else a basic-stats proxy). There is no Elite Balanced tier;
 teams that match zero systems map to Undefined / No Identity only.
 
 Reads team_stats, player_stats_advanced, and player_stats_basic (usage + proxies
@@ -104,6 +105,45 @@ def fetch_basic_team_proxies(
         tid = int(row["team_id"])
         out[tid] = {"ast_proxy": row["ast_team_pg"], "fg3_proxy": row["fg3_avg"]}
     return out
+
+
+def fetch_team_tov_proxy(con: sqlite3.Connection, season: str) -> dict[int, float | None]:
+    """SUM(tov×gp)/MAX(gp) from player_stats_basic — aligns with ~TOV/game scale."""
+    out: dict[int, float | None] = {}
+    for row in con.execute(
+        """
+        SELECT team_id,
+            SUM(tov * COALESCE(gp, 0)) * 1.0 / NULLIF(MAX(gp), 0) AS tpg
+        FROM player_stats_basic
+        WHERE season = ? AND team_id IS NOT NULL
+        GROUP BY team_id
+        """,
+        (season,),
+    ):
+        tid = int(row["team_id"])
+        v = row["tpg"]
+        if v is None:
+            out[tid] = None
+        else:
+            fv = float(v)
+            out[tid] = None if math.isnan(fv) else fv
+    return out
+
+
+def team_tov_pct_value(
+    trow_dict: dict[str, Any],
+    team_cols: set[str],
+    basic_tov_proxy: dict[int, float | None],
+    team_id: int,
+) -> float | None:
+    if "team_tov_pct" in team_cols and trow_dict.get("team_tov_pct") is not None:
+        try:
+            v = float(trow_dict["team_tov_pct"])
+            return None if math.isnan(v) else v
+        except (TypeError, ValueError):
+            pass
+    p = basic_tov_proxy.get(team_id)
+    return p
 
 
 def fetch_advanced_ts_proxy(con: sqlite3.Connection, season: str) -> dict[int, float | None]:
@@ -279,6 +319,17 @@ def ok_ge(val: float | None, thresh: float) -> bool:
     return not math.isnan(f) and f >= thresh
 
 
+def ok_le(val: float | None, upper: float) -> bool:
+    """True iff val is a finite float at or below upper (inclusive)."""
+    if val is None:
+        return False
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return False
+    return not math.isnan(f) and f <= upper
+
+
 def ok_strict_lt(val: float | None, upper: float) -> bool:
     """True iff val is a finite float strictly below upper (exclusive)."""
     if val is None:
@@ -289,7 +340,7 @@ def ok_strict_lt(val: float | None, upper: float) -> bool:
     return f < upper
 
 
-def qualifies_perfect_net(net_rating: float | None, thresh: float = 4.5) -> bool:
+def qualifies_perfect_net(net_rating: float | None, thresh: float = 5.0) -> bool:
     if net_rating is None:
         return False
     try:
@@ -310,27 +361,32 @@ def resolve_playstyles(
     team_ast: float | None,
     off_reb: float | None,
     team_ts_pct_metric: float | None,
+    team_tov_pct: float | None,
 ) -> tuple[str, str, list[str]]:
     matched_styles: list[str] = []
 
     # Check order: Motion → Pace & Space → Paint & Pound → Heliocentric (primary = first match)
-    if ok_ge(avg_open_sq, 0.30) and ok_ge(team_ast, 25.5):
+    if ok_ge(avg_open_sq, 0.28) and ok_ge(team_ast, 24.0):
         matched_styles.append("Motion")
 
-    if ok_ge(three_pt, 0.435) and ok_ge(team_fg3_pct, 0.335):
+    if ok_ge(three_pt, 0.35) and ok_ge(team_fg3_pct, 0.31):
         matched_styles.append("Pace & Space")
 
     if (
-        ok_ge(off_reb, 10.5)
-        and ok_ge(team_ts_pct_metric, 0.560)
-        and ok_strict_lt(three_pt, 0.41)
+        ok_ge(off_reb, 11.2)
+        and ok_ge(team_ts_pct_metric, 0.55)
+        and ok_strict_lt(three_pt, 0.35)
     ):
         matched_styles.append("Paint & Pound")
 
-    if ok_ge(max_usg, 0.32) and ok_ge(player_ts_pct, 0.575):
+    if ok_ge(max_usg, 0.32) and ok_ge(player_ts_pct, 0.55):
         matched_styles.append("Heliocentric")
 
-    if len(matched_styles) >= 3 and qualifies_perfect_net(net_rating):
+    if (
+        len(matched_styles) >= 3
+        and qualifies_perfect_net(net_rating)
+        and ok_le(team_tov_pct, 14.0)
+    ):
         return "Perfect", ", ".join(matched_styles), matched_styles
 
     if len(matched_styles) >= 1:
@@ -454,7 +510,7 @@ def print_motion_gap_diagnostics(con: sqlite3.Connection) -> None:
             flush=True,
         )
     print(
-        "  (Motion rule: roster AVG open_shot_pct >= 0.30 AND team_ast >= 25.5.)",
+        "  (Motion rule: roster AVG open_shot_pct >= 0.28 AND team_ast >= 24.0.)",
         flush=True,
     )
 
@@ -571,6 +627,7 @@ def main() -> None:
         )
 
     stats = Counter()
+    perfect_teams: list[tuple[str, str, str]] = []
 
     insert_sql = """
         INSERT OR REPLACE INTO team_playstyle_data
@@ -581,6 +638,7 @@ def main() -> None:
     for season in seasons:
         adv_by_team = fetch_advanced_rollups(con, season)
         basic_team_proxies = fetch_basic_team_proxies(con, season)
+        basic_tov_proxy = fetch_team_tov_proxy(con, season)
         adv_ts_by_team = fetch_advanced_ts_proxy(con, season)
 
         teams = con.execute(
@@ -619,19 +677,20 @@ def main() -> None:
             t_pts = team_pts_per_game(tr, team_cols)
             team_ts_m = team_ts_pct_value(tr, team_cols, adv_ts_by_team, tid, t_pts)
             net_rtg = team_net_rating(tr, team_cols)
+            team_tov = team_tov_pct_value(tr, team_cols, basic_tov_proxy, tid)
 
             if (
-                ok_ge(oreb_pg, 10.5)
-                and ok_ge(team_ts_m, 0.560)
+                ok_ge(oreb_pg, 11.2)
+                and ok_ge(team_ts_m, 0.55)
                 and t3 is not None
                 and not math.isnan(t3)
-                and t3 >= 0.41
+                and t3 >= 0.35
             ):
                 ab = team_abbr if team_abbr else f"team_id={tid}"
                 rr = round(float(t3), 4)
                 print(
                     f"[STYLE STRIPPED] {ab} ({season}) - High OffReb but 3PT Rate "
-                    f"{rr} >= 0.41 (Paint & Pound cap).",
+                    f"{rr} >= 0.35 (Paint & Pound cap).",
                     flush=True,
                 )
 
@@ -645,23 +704,40 @@ def main() -> None:
                 team_ast=team_ast,
                 off_reb=oreb_pg,
                 team_ts_pct_metric=team_ts_m,
+                team_tov_pct=team_tov,
             )
 
-            if len(dual_list) >= 3 and not qualifies_perfect_net(net_rtg):
+            if len(dual_list) >= 3 and not (
+                qualifies_perfect_net(net_rtg) and ok_le(team_tov, 14.0)
+            ):
                 ab = team_abbr if team_abbr else f"team_id={tid}"
-                if net_rtg is None:
-                    nr_str = "None"
+                if not qualifies_perfect_net(net_rtg):
+                    if net_rtg is None:
+                        nr_str = "None"
+                    else:
+                        try:
+                            nf = float(net_rtg)
+                            nr_str = "NaN" if math.isnan(nf) else str(round(nf, 2))
+                        except (TypeError, ValueError):
+                            nr_str = str(net_rtg)
+                    print(
+                        f"[PERFECTION DENIED] {ab} - Hit {len(dual_list)} styles but "
+                        f"Net Rating {nr_str} < 5.0. Assigned to {dual_list[0]}.",
+                        flush=True,
+                    )
                 else:
-                    try:
-                        nf = float(net_rtg)
-                        nr_str = "NaN" if math.isnan(nf) else str(round(nf, 2))
-                    except (TypeError, ValueError):
-                        nr_str = str(net_rtg)
-                print(
-                    f"[PERFECTION DENIED] {ab} - Hit {len(dual_list)} styles but "
-                    f"Net Rating {nr_str} < 4.5. Assigned to {dual_list[0]}.",
-                    flush=True,
-                )
+                    tv_str = (
+                        f"{float(team_tov):.4f}"
+                        if team_tov is not None
+                        and not (isinstance(team_tov, float) and math.isnan(team_tov))
+                        else "None"
+                    )
+                    print(
+                        f"[PERFECTION DENIED] {ab} - Hit {len(dual_list)} styles, "
+                        f"Net OK, but team TOV metric {tv_str} > 14.0. "
+                        f"Assigned to {dual_list[0]}.",
+                        flush=True,
+                    )
 
             stats[primary] += 1
 
@@ -672,6 +748,7 @@ def main() -> None:
                     f"with {all_styles}!",
                     flush=True,
                 )
+                perfect_teams.append((season, who_p, all_styles))
 
             if "Heliocentric" in dual_list:
                 who_h = team_abbr if team_abbr else f"team_id={tid}"
@@ -714,6 +791,24 @@ def main() -> None:
     for k, v in sorted(leftovers):
         print(f"  • {k}: {v}", flush=True)
     print(f"  ─ Total classified teams: {grand}", flush=True)
+
+    print("", flush=True)
+    print(
+        "[PLAYSTYLE] Perfect tier (3+ styles, Net >= 5.0, TOV metric <= 14.0) — all teams:",
+        flush=True,
+    )
+    if not perfect_teams:
+        print("  (none)", flush=True)
+    else:
+        for se, ab, styles in perfect_teams:
+            print(f"  • {se} {ab} — {styles}", flush=True)
+        print("", flush=True)
+        print(
+            "[PLAYSTYLE] Perfect NET 5.0+ — celebration roll call:",
+            flush=True,
+        )
+        for se, ab, _sty in perfect_teams:
+            print(f"  [CELEBRATION] {se} {ab}", flush=True)
 
     if stats.get("Motion", 0) == 0:
         print_top5_teams_by_team_ast(con)
