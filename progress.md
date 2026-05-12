@@ -1,6 +1,10 @@
 Here is your updated PROGRESS.md based exactly on your handwritten notes:
 
-NBA Predictor Progress Phase 1: Setup & Defense [x] Create project folder
+NBA Predictor Progress [x] 
+
+Phase 1: Setup & Defense 
+
+[x] Create project folder 
 
 [x] Configure .env for API keys
 
@@ -10,13 +14,16 @@ NBA Predictor Progress Phase 1: Setup & Defense [x] Create project folder
 
 [x] Create ARCHITECTURE.md and PROGRESS.md
 
-Phase 2: Data Engines (1.1) [ ] Download and test nba_api (Main builder)
+Phase 2: Data Engines (1.1) [x]
+
+[x] Download and test nba_api (Main builder)
 
 [ ] Setup basketball-reference scraper (Back up plan) - NOT NEEDED
 
 [x] Initialize SQLite Database (nba_data.db)
 
-Phase 3: Data Collection (2.0) [ ] Team Stats: Pts, ADJ, Net Ratings, Previous Seed/Playoff Outcome
+Phase 3: Data Collection (2.0) [x]
+[x] Team Stats: Pts, ADJ, Net Ratings, Previous Seed/Playoff Outcome
 
 [x] League Stats: (Pts, Reb, assists, turnovers, steals, blocks, Off/Def Ratings, Pace)
 
@@ -24,7 +31,7 @@ Phase 3: Data Collection (2.0) [ ] Team Stats: Pts, ADJ, Net Ratings, Previous S
 
 [X] Player Stats: Usage, MPG, and total Games Played - FOR PLAY OFFS TOO
 
-Phase 3.2: more data sepecialized
+Phase 3.2: more data sepecialized [x]
 
 [x] Player Stats: - Per 100 possessions
 
@@ -32,7 +39,7 @@ Phase 3.2: more data sepecialized
 
 [x] Player Stats: Shooting splits & coverage/contest %
 
-Phase 3.5: more data specialized 
+Phase 3.5: more data specialized [x]
 
 [X] Rookie Data: Draft position, origin, potential, "Chet/Harper Effect"
 
@@ -40,25 +47,31 @@ Phase 3.5: more data specialized
 
 [x] player_stats_basic: position, height, age, years in league, weight, pts, assists, rebounrds, steals, blocks
 
-Phase 4: PR RAW - Individual Formulas (4.0) [ ] 
+Phase 4: PR RAW - Individual Formulas (4.0) [x] 
 
 Offensive Impact:
 
 
-[ ] Klay Effect (Shooter Gravity)
+[x] Klay Effect (Shooter Gravity)
 
-[ ] SMAQ Effect (Spacing/Shooters around)
+[x] SMAQ Effect (Spacing/Shooters around)
 
-[ ] Offensive Rebounds (Extra possessions)
+[x] NASH EFFECT (HIGH EFFICIENT guards)
 
-[ ] TS% (Wasted possessions check)
+[x] EFFICIENCY GODS EFFECT (HIGH EFFICIENT TS%)
+
+[x] MVP POTENTIAL (TOP 5 IN LEAGUE)
+
+[ ] Offensive Rebounds (Extra possessions) not needed
+
+[ ] TS% (Wasted possessions check) not needed
 
 
-[ ] Defensive Impact:
+Defensive Impact:
 
-[ ] Wemby Impact (Interior gravity)
+[x] THE DEFENSE (STOCKS + DEFLECTIONS)
 
-[ ] Blocks/Steals/Deflections ratio per position
+[X] THE BOARD (REBOUNDS))
 
 
 [ ] Progression/Age:
