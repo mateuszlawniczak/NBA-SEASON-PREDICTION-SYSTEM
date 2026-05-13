@@ -18,12 +18,12 @@ import sys
 DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
 
 GRADE_MULTIPLIER: dict[str, float] = {
-    "S": 1.20,
-    "A": 1.10,
-    "B": 1.00,
-    "C": 0.90,
-    "D": 0.80,
-    "F": 0.70,
+    "S": 1.08,
+    "A": 1.04,
+    "B": 1.02,
+    "C": 1.00,
+    "D": 0.97,
+    "F": 0.95,
 }
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
