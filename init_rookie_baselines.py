@@ -32,16 +32,14 @@ INSERT INTO rookie_baselines (
 ) VALUES (?, ?, ?, ?);
 """
 
-# All 8 combinations: draft_tier × age_tier
 ROWS = [
-    ("Top 3", "Under 21", 15.0, "Generational / Elite Project"),
-    ("Top 3", "21+", 18.0, "Pro-Ready Franchise Player"),
-    ("Lottery 4-14", "Under 21", 8.0, "High-Ceiling Project"),
-    ("Lottery 4-14", "21+", 12.0, "Instant Rotation Player"),
-    ("Late First 15-30", "Under 21", 4.0, "G-League / Deep Bench Project"),
-    ("Late First 15-30", "21+", 7.0, "Plug-and-Play Role Player"),
-    ("Second Round", "Under 21", 1.0, "Stash / Long-term Project"),
-    ("Second Round", "21+", 2.0, "Fringe Roster Player"),
+    ("Top 3", "Under 21", 25.0, "Generational / Elite Project"),
+    ("Top 3", "21+", 27.0, "Pro-Ready Franchise Player"),
+    ("Lottery 4-14", "Under 20", 14.0, "High-Ceiling Project"),
+    ("Lottery 4-14", "20-21", 17.0, "Upside Rotation Player"),
+    ("Lottery 4-14", "22+", 20.0, "Instant Impact Veteran Rookie"),
+    ("Late First 15-30", "Any Age", 8.0, "Bench Project / Role Player"),
+    ("Second Round", "Any Age", 8.0, "Stash / Fringe Roster"),
 ]
 
 
@@ -55,7 +53,7 @@ def main() -> None:
     finally:
         conn.close()
 
-    print("rookie_baselines table created and populated (8 rows).")
+    print("rookie_baselines table created and populated (7 rows).")
     print()
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -71,8 +69,12 @@ def main() -> None:
                     WHEN 'Second Round' THEN 4
                 END,
                 CASE age_tier
-                    WHEN 'Under 21' THEN 1
-                    WHEN '21+' THEN 2
+                    WHEN 'Under 20' THEN 1
+                    WHEN 'Under 21' THEN 2
+                    WHEN '20-21' THEN 3
+                    WHEN '21+' THEN 4
+                    WHEN '22+' THEN 5
+                    WHEN 'Any Age' THEN 6
                 END;
             """
         )
