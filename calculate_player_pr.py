@@ -1,9 +1,10 @@
 """
 calculate_player_pr.py
 ----------------------
-Predictive Monte Carlo **Base PR** (v2): efficiency / value-added composite for
-the injury simulator. **No** games-played penalties or GP scaling — only
-per-game rates scaled to a **30 MPG** workload.
+Predictive Monte Carlo **Base PR** (efficiency / value-added talent floor) for
+the injury simulator. **No** games-played penalties. Minutes enter through a
+**fractional exponent** so elite bench rates are boosted without linear
+full-starter scaling.
 
 Reads: player_stats_basic, player_stats_advanced (inner join).
 Writes **only**: ``player_simulation_pr`` for ``TARGET_SEASON`` (delete + replace).
@@ -15,7 +16,7 @@ Per-game pillars (``era_avg_ts`` = 0.58):
   reb_score  = (dreb + (oreb * 3.0)) * 0.7
 
   raw_impact = pts_score + ast_score + def_score + reb_score
-  base_pr    = round(raw_impact * (mpg / 30.0))
+  base_pr    = round(raw_impact * ((mpg / 30.0) ** 0.65))
 """
 
 from __future__ import annotations
@@ -31,7 +32,12 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
 TARGET_SEASON = "2024-25"
 
 ERA_AVG_TS = 0.58
+MPG_REF = 30.0
+MPG_CURVE_EXP = 0.65
+
 TOP_N = 40
+BENCH_MPG_MAX = 22.0
+BENCH_TOP_N = 10
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -122,8 +128,8 @@ def load_rows(con: sqlite3.Connection) -> list[dict[str, Any]]:
         con.row_factory = prev
 
 
-def compute_row(row: dict[str, Any]) -> tuple[int, float, float, float] | None:
-    """Returns (base_pr, mpg, pts_score, def_score) or None."""
+def compute_row(row: dict[str, Any]) -> tuple[int, float, float] | None:
+    """Returns (base_pr, mpg, raw_impact) or None."""
     gp = fint(row.get("gp")) or 0
     if gp <= 0:
         return None
@@ -159,29 +165,53 @@ def compute_row(row: dict[str, Any]) -> tuple[int, float, float, float] | None:
     reb_score = (dreb + (oreb * 3.0)) * 0.7
 
     raw_impact = pts_score + ast_score + def_score + reb_score
-    base_pr = int(round(raw_impact * (mpg / 30.0)))
+    mpg_factor = (mpg / MPG_REF) ** MPG_CURVE_EXP
+    base_pr = int(round(raw_impact * mpg_factor))
 
-    return base_pr, mpg, pts_score, def_score
+    return base_pr, mpg, raw_impact
 
 
-def print_top_audit(rows: list[tuple[str, str, float, float, float, int]]) -> None:
-    """rows: (player, team, mpg, pts_val, def_val, base_pr)."""
-    col_w = (22, 5, 6, 8, 8, 8)
+def print_top_audit(rows: list[tuple[str, str, float, float, int]]) -> None:
+    """rows: (player, team, mpg, raw_impact, base_pr)."""
+    col_w = (22, 5, 6, 11, 8)
     header = (
         f"{'Player':<{col_w[0]}} | {'Team':<{col_w[1]}} | "
-        f"{'MPG':>{col_w[2]}} | {'Pts_Val':>{col_w[3]}} | "
-        f"{'Def_Val':>{col_w[4]}} | {'Base PR':>{col_w[5]}}"
+        f"{'MPG':>{col_w[2]}} | {'Raw Impact':>{col_w[3]}} | {'Base PR':>{col_w[4]}}"
     )
     print(
-        f"Top {TOP_N} by Base PR ({TARGET_SEASON}) v2 — per-game raw × (MPG/30)",
+        f"Top {TOP_N} by Base PR ({TARGET_SEASON}) — "
+        f"raw_impact × (MPG/{MPG_REF:.0f})^{MPG_CURVE_EXP}",
         flush=True,
     )
     print(header, flush=True)
     print("-" * len(header), flush=True)
-    for pn, tm, mpg, pv, dv, pr in rows:
+    for pn, tm, mpg, ri, pr in rows:
         print(
             f"{pn:<{col_w[0]}} | {tm:<{col_w[1]}} | {mpg:>{col_w[2]}.1f} | "
-            f"{pv:>{col_w[3]}.1f} | {dv:>{col_w[4]}.1f} | {pr:>{col_w[5]}}",
+            f"{ri:>{col_w[3]}.1f} | {pr:>{col_w[4]}}",
+            flush=True,
+        )
+    print(flush=True)
+
+
+def print_bench_elite_audit(rows: list[tuple[str, str, float, float, int]]) -> None:
+    """rows: (player, team, mpg, raw_impact, base_pr), already filtered mpg < cutoff."""
+    col_w = (22, 5, 6, 11, 8)
+    header = (
+        f"{'Player':<{col_w[0]}} | {'Team':<{col_w[1]}} | "
+        f"{'MPG':>{col_w[2]}} | {'Raw Impact':>{col_w[3]}} | {'Base PR':>{col_w[4]}}"
+    )
+    print(
+        f"Bench curve audit — top {BENCH_TOP_N} by Base PR with MPG < {BENCH_MPG_MAX:g} "
+        f"({TARGET_SEASON})",
+        flush=True,
+    )
+    print(header, flush=True)
+    print("-" * len(header), flush=True)
+    for pn, tm, mpg, ri, pr in rows:
+        print(
+            f"{pn:<{col_w[0]}} | {tm:<{col_w[1]}} | {mpg:>{col_w[2]}.1f} | "
+            f"{ri:>{col_w[3]}.1f} | {pr:>{col_w[4]}}",
             flush=True,
         )
     print(flush=True)
@@ -205,7 +235,7 @@ def main() -> None:
         )
 
         rows_out: list[tuple[str, str, str, int, int, float]] = []
-        report: list[tuple[str, str, float, float, float, int]] = []
+        report: list[tuple[str, str, float, float, int]] = []
 
         for row in raw_rows:
             pn = row.get("player_name")
@@ -216,11 +246,11 @@ def main() -> None:
             out = compute_row(row)
             if out is None:
                 continue
-            base_pr, mpg, pts_score, def_score = out
+            base_pr, mpg, raw_impact = out
             gp = fint(row.get("gp")) or 0
             team_s = str(team).strip()
             rows_out.append((pn, team_s, TARGET_SEASON, base_pr, gp, mpg))
-            report.append((pn, team_s, mpg, pts_score, def_score, base_pr))
+            report.append((pn, team_s, mpg, raw_impact, base_pr))
 
         con.executemany(
             """
@@ -232,8 +262,12 @@ def main() -> None:
         )
         con.commit()
 
-        report.sort(key=lambda x: (-x[5], -x[2], x[0]))
+        report.sort(key=lambda x: (-x[4], -x[2], x[0]))
         print_top_audit(report[:TOP_N])
+
+        bench = [r for r in report if r[2] < BENCH_MPG_MAX]
+        bench.sort(key=lambda x: (-x[4], -x[2], x[0]))
+        print_bench_elite_audit(bench[:BENCH_TOP_N])
     finally:
         con.close()
 

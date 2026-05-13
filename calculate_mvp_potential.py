@@ -39,6 +39,7 @@ EFF_BIG_TS = 0.65
 EFFICIENCY_GOD_BONUS = 8.0
 MIN_GP_DEF_BOARD = 40
 MIN_MINUTES_DEFENSE = 28.0
+MIN_MINUTES_DEFENSE_ELITE_DR = 25.0
 MIN_MINUTES_BOARD = 25.0
 DEFENSE_MIN_STOCKS = 2.5
 BOARD_MIN_TRB = 11.5
@@ -147,7 +148,8 @@ def load_stints(con: sqlite3.Connection) -> list[dict[str, Any]]:
         {stl_e},
         {blk_e},
         {pos_e},
-        a.ts_pct AS ts_pct
+        a.ts_pct AS ts_pct,
+        a.def_rating AS def_rating
       FROM player_stats_basic AS b
       INNER JOIN player_stats_advanced AS a
         ON a.season = b.season
@@ -174,6 +176,7 @@ def stint_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "blk": ffloat(row.get("blk")),
         "position": row.get("position"),
         "ts_pct": ffloat(row.get("ts_pct")),
+        "def_rating": ffloat(row.get("def_rating")),
     }
 
 
@@ -205,6 +208,7 @@ def season_aggregate(stints: list[dict[str, Any]]) -> dict[str, Any] | None:
         "stl_bar": wavg("stl"),
         "blk_bar": wavg("blk"),
         "off_reb_bar": wavg("off_reb"),
+        "def_rating_bar": wavg("def_rating"),
     }
 
 
@@ -276,13 +280,18 @@ def defense_effect_eligible(agg: dict[str, Any]) -> bool:
     if agg["sum_w"] < MIN_GP_DEF_BOARD:
         return False
     mb = agg["min_bar"]
-    if mb is None or mb < MIN_MINUTES_DEFENSE:
+    if mb is None or mb < MIN_MINUTES_DEFENSE_ELITE_DR:
         return False
     stl_b = agg["stl_bar"]
     blk_b = agg["blk_bar"]
-    if stl_b is None or blk_b is None:
-        return False
-    return (stl_b + blk_b) >= DEFENSE_MIN_STOCKS
+    stocks_path = (
+        mb >= MIN_MINUTES_DEFENSE
+        and stl_b is not None
+        and blk_b is not None
+        and (stl_b + blk_b) >= DEFENSE_MIN_STOCKS
+    )
+    elite_dr_path = agg.get("def_rating_bar") is not None and agg["def_rating_bar"] <= 110.0
+    return stocks_path or elite_dr_path
 
 
 def board_effect_eligible(agg: dict[str, Any]) -> bool:
@@ -497,7 +506,8 @@ def main() -> None:
         )
         print(
             f"  Defense / Board: not Alien; def gp>={MIN_GP_DEF_BOARD}, "
-            f"min>={MIN_MINUTES_DEFENSE}, stocks>={DEFENSE_MIN_STOCKS}; "
+            f"min>={MIN_MINUTES_DEFENSE} (stocks) / "
+            f">={MIN_MINUTES_DEFENSE_ELITE_DR} (def_rating), stocks>={DEFENSE_MIN_STOCKS}; "
             f"board min>={MIN_MINUTES_BOARD}, "
             f"trb>={BOARD_MIN_TRB} or oreb>={BOARD_MIN_OREB}.",
             flush=True,
