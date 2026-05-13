@@ -1,13 +1,13 @@
 """
 build_projected_team_pr_25_26.py
----------------------------------
-9-man rotation engine: per-team positional draft on ULTIMATE_PR, then coach and
-playstyle multipliers. Writes ONLY ``projected_team_pr_25_26`` in nba_data.db;
-no other tables are altered.
+--------------------------------
+9-man rotation engine: per-team positional draft using ``ULTIMATE_PR`` (``pr`` +
+``mapped_position``), then coach and playstyle multipliers. Writes ONLY
+``projected_team_pr_25_26`` in nba_data.db; no other tables are altered.
 
 Reads:
-  player_starting_teams_25_26, ULTIMATE_PR, player_positions,
-  team_coaches_25_26, team_playstyle_data (season 2024-25), playstyle_multipliers
+  player_starting_teams_25_26, ULTIMATE_PR, team_coaches_25_26,
+  team_playstyle_data (season 2024-25), playstyle_multipliers
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
 REQUIRED_TABLES = (
     "player_starting_teams_25_26",
     "ULTIMATE_PR",
-    "player_positions",
     "team_coaches_25_26",
     "team_playstyle_data",
     "playstyle_multipliers",
@@ -46,6 +45,9 @@ POSITION_QUOTAS: tuple[tuple[str, int], ...] = (
     ("F", 3),
     ("G", 3),
 )
+
+DEFAULT_PR = 5.0
+DEFAULT_POSITION = "F"
 
 
 def _tables_present(con: sqlite3.Connection) -> list[str]:
@@ -73,28 +75,50 @@ def _coach_multiplier(grade_letter: str | None) -> float:
     return COACH_GRADE_MULT[grade_letter]
 
 
-def _draft_rotation_for_team(roster_sorted: pd.DataFrame) -> tuple[list[str], float]:
+def _prepare_merged_roster(merged: pd.DataFrame) -> pd.DataFrame:
+    """Fill missing ``pr`` / ``mapped_position`` so no starter rows are dropped."""
+    out = merged.copy()
+    out["pr"] = pd.to_numeric(out["pr"], errors="coerce").fillna(float(DEFAULT_PR))
+    out["mapped_position"] = out["mapped_position"].fillna(DEFAULT_POSITION)
+    out["mapped_position"] = out["mapped_position"].astype(str).str.strip().str.upper()
+    return out
+
+
+def _draft_rotation_for_team(roster_sorted: pd.DataFrame) -> tuple[pd.DataFrame, float, str]:
     """
-    roster_sorted: rows for one team only, sorted by pr descending (stable).
-    Draft order: top 2 C, top 3 F, top 3 G, then highest-pr wildcard from remainder.
+    Core: top 2 C, top 3 F, top 3 G (by ``pr`` within each position).
+    Backfill: from players not drafted, top (9 - N) by ``pr`` so the rotation
+    targets nine players when the roster is large enough.
     """
-    drafted: list[str] = []
-    drafted_set: set[str] = set()
+    r = (
+        roster_sorted.sort_values(["pr", "player_name"], ascending=[False, True], kind="mergesort")
+        .drop_duplicates(subset=["player_name"], keep="first")
+        .reset_index(drop=True)
+    )
+
+    drafted_chunks: list[pd.DataFrame] = []
     for pos, quota in POSITION_QUOTAS:
-        sub = roster_sorted[roster_sorted["mapped_position"] == pos]
-        for name in sub["player_name"].head(quota).tolist():
-            if name not in drafted_set:
-                drafted.append(str(name))
-                drafted_set.add(str(name))
+        sub = r[r["mapped_position"] == pos].copy()
+        drafted_chunks.append(sub.head(quota))
 
-    remainder = roster_sorted[~roster_sorted["player_name"].isin(drafted_set)]
-    if not remainder.empty:
-        wn = str(remainder.iloc[0]["player_name"])
-        drafted.append(wn)
+    drafted_df = (
+        pd.concat(drafted_chunks, ignore_index=True) if drafted_chunks else pd.DataFrame(columns=r.columns)
+    )
+    if not drafted_df.empty:
+        drafted_df = drafted_df.drop_duplicates(subset=["player_name"], keep="first")
 
-    pr_by_name = roster_sorted.set_index("player_name")["pr"]
-    base = float(sum(pr_by_name.loc[n] for n in drafted if n in pr_by_name.index))
-    return drafted, base
+    n = len(drafted_df)
+    drafted_set = set(drafted_df["player_name"].astype(str)) if n else set()
+    remainder = r[~r["player_name"].astype(str).isin(drafted_set)]
+    need = 9 - n
+
+    if need > 0 and not remainder.empty:
+        extra = remainder.head(need)
+        drafted_df = pd.concat([drafted_df, extra], ignore_index=True)
+
+    base_team_pr = float(drafted_df["pr"].sum()) if not drafted_df.empty else 0.0
+    rotation_players = ",".join(drafted_df["player_name"].astype(str).tolist())
+    return drafted_df, base_team_pr, rotation_players
 
 
 def _load_frames(con: sqlite3.Connection) -> tuple[pd.DataFrame, ...]:
@@ -102,12 +126,8 @@ def _load_frames(con: sqlite3.Connection) -> tuple[pd.DataFrame, ...]:
         "SELECT player_name, team_abbr FROM player_starting_teams_25_26",
         con,
     )
-    pr_df = pd.read_sql_query(
-        "SELECT player_name, pr FROM ULTIMATE_PR",
-        con,
-    )
-    pos_df = pd.read_sql_query(
-        "SELECT player_name, mapped_position FROM player_positions",
+    ultimate = pd.read_sql_query(
+        "SELECT player_name, pr, mapped_position FROM ULTIMATE_PR",
         con,
     )
     coaches = pd.read_sql_query(
@@ -126,7 +146,7 @@ def _load_frames(con: sqlite3.Connection) -> tuple[pd.DataFrame, ...]:
         "SELECT playstyle, multiplier FROM playstyle_multipliers",
         con,
     )
-    return teams, pr_df, pos_df, coaches, playstyles, mult_df
+    return teams, ultimate, coaches, playstyles, mult_df
 
 
 def main() -> None:
@@ -145,13 +165,12 @@ def main() -> None:
             )
             return
 
-        teams, pr_df, pos_df, coaches, playstyles, mult_df = _load_frames(con)
+        teams, ultimate, coaches, playstyles, mult_df = _load_frames(con)
 
-        merged = teams.merge(pr_df, on="player_name", how="inner").merge(
-            pos_df, on="player_name", how="inner"
-        )
-        merged = merged.dropna(subset=["pr", "mapped_position", "team_abbr"])
-        merged = merged[merged["mapped_position"].isin(["G", "F", "C"])]
+        merged = teams.merge(ultimate, on="player_name", how="left")
+        merged = _prepare_merged_roster(merged)
+        merged = merged.dropna(subset=["team_abbr"])
+        merged = merged[merged["team_abbr"].astype(str).str.strip() != ""]
 
         mult_map = dict(zip(mult_df["playstyle"], mult_df["multiplier"]))
         coach_by_team = coaches.drop_duplicates(subset=["team_abbr"]).set_index("team_abbr")[
@@ -163,17 +182,10 @@ def main() -> None:
 
         out_rows: list[tuple] = []
 
-        # Strict isolation: iterate groupby('team_abbr') — sort ONLY inside each group.
         for team_abbr, g in merged.groupby("team_abbr", sort=True):
             tabbr = str(team_abbr)
-            # Per-team roster sorted by PR descending (no global roster sort).
-            roster = (
-                g.sort_values(["pr", "player_name"], ascending=[False, True], kind="mergesort")
-                .drop_duplicates(subset=["player_name"], keep="first")
-                .reset_index(drop=True)
-            )
-            rotation_names, base_team_pr = _draft_rotation_for_team(roster)
-            rotation_players = ",".join(rotation_names)
+            roster = g.reset_index(drop=True)
+            _, base_team_pr, rotation_players = _draft_rotation_for_team(roster)
 
             raw_grade = coach_by_team.get(tabbr, pd.NA)
             grade_norm = _normalize_grade(raw_grade)
