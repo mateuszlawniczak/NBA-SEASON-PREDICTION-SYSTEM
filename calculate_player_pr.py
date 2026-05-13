@@ -1,19 +1,21 @@
 """
 calculate_player_pr.py
 ----------------------
-Predictive Monte Carlo **Base PR** (talent floor/ceiling driver) using an
-efficiency / value-added composite. **No** games-played penalties or GP scaling;
-only per-game rates normalized to a 30 MPG workload.
+Predictive Monte Carlo **Base PR** (v2): efficiency / value-added composite for
+the injury simulator. **No** games-played penalties or GP scaling — only
+per-game rates scaled to a **30 MPG** workload.
 
 Reads: player_stats_basic, player_stats_advanced (inner join).
 Writes **only**: ``player_simulation_pr`` for ``TARGET_SEASON`` (delete + replace).
 
-Formula summary (per game):
-  pts_score   = max(0, (pts * ts_pct) - (pts * era_avg_ts)), era_avg_ts = 0.58
-  ast_score   = (ast * 3.5) - (tov * 4.0)
-  def_score   = (stl * 6.0) + (blk * 8.0) + (deflections * 4.0)
-  reb_score   = (dreb + (oreb * 1.5)) * 0.5
-  bonuses / floor, then base_pr = round(raw_impact * (mpg / 30.0))
+Per-game pillars (``era_avg_ts`` = 0.58):
+  pts_score  = (ts_pct / era_avg_ts) * pts
+  ast_score  = ast + ((ast / max(tov, 1.0)) * 2.5)
+  def_score  = ((stl + blk) * 3.0) + deflections
+  reb_score  = (dreb + (oreb * 3.0)) * 0.7
+
+  raw_impact = pts_score + ast_score + def_score + reb_score
+  base_pr    = round(raw_impact * (mpg / 30.0))
 """
 
 from __future__ import annotations
@@ -60,7 +62,7 @@ def fint(v: Any) -> int | None:
 
 
 def season_minutes(total_minutes: int | None, mpg_field: float | None, gp: int) -> float | None:
-    """Total minutes on the season (``min``); used for mpg = min / gp."""
+    """Total season minutes (``min``); ``mpg`` = min / gp."""
     if total_minutes is not None and total_minutes > 0:
         return float(total_minutes)
     if mpg_field is not None and mpg_field > 0 and gp > 0:
@@ -120,13 +122,8 @@ def load_rows(con: sqlite3.Connection) -> list[dict[str, Any]]:
         con.row_factory = prev
 
 
-def compute_row(
-    row: dict[str, Any],
-) -> tuple[int, float, dict[str, float]] | None:
-    """
-    Returns (base_pr_int, mpg, pillars) or None if unusable row.
-    pillars: pts_val, ast_val, def_val, reb_val, raw_impact (for debugging/audit).
-    """
+def compute_row(row: dict[str, Any]) -> tuple[int, float, float, float] | None:
+    """Returns (base_pr, mpg, pts_score, def_score) or None."""
     gp = fint(row.get("gp")) or 0
     if gp <= 0:
         return None
@@ -154,55 +151,37 @@ def compute_row(
     dfl = 0.0 if dfl is None else dfl
 
     ts_raw = ffloat(row.get("ts_pct"))
-    ts_for_pts = ERA_AVG_TS if ts_raw is None or ts_raw <= 0 else ts_raw
+    ts_eff = ERA_AVG_TS if ts_raw is None or ts_raw <= 0 else ts_raw
 
-    pts_score = max(0.0, (pts * ts_for_pts) - (pts * ERA_AVG_TS))
-    ast_score = (ast * 3.5) - (tov * 4.0)
-    def_score = (stl * 6.0) + (blk * 8.0) + (dfl * 4.0)
-    reb_score = (dreb + (oreb * 1.5)) * 0.5
+    pts_score = (ts_eff / ERA_AVG_TS) * pts
+    ast_score = ast + ((ast / max(tov, 1.0)) * 2.5)
+    def_score = ((stl + blk) * 3.0) + dfl
+    reb_score = (dreb + (oreb * 3.0)) * 0.7
 
-    bonus_disrupt = 15.0 if (blk > 1.8 or (stl + dfl) > 5.5) else 0.0
-    ts_ok = ts_raw is not None and ts_raw > 0.64
-    bonus_finish = 10.0 if (ts_ok and pts > 15.0) else 0.0
-    base_floor = 25.0 if mpg > 15.0 else 0.0
-
-    raw_impact = (
-        pts_score
-        + ast_score
-        + def_score
-        + reb_score
-        + bonus_disrupt
-        + bonus_finish
-        + base_floor
-    )
-
+    raw_impact = pts_score + ast_score + def_score + reb_score
     base_pr = int(round(raw_impact * (mpg / 30.0)))
 
-    pillars = {
-        "pts_val": pts_score,
-        "ast_val": ast_score,
-        "def_val": def_score,
-        "reb_val": reb_score,
-        "raw_impact": raw_impact,
-    }
-    return base_pr, mpg, pillars
+    return base_pr, mpg, pts_score, def_score
 
 
-def print_top_audit(rows: list[tuple[str, str, float, float, float, float, int]]) -> None:
-    """rows: (player, team, mpg, pts_val, ast_val, def_val, base_pr)."""
-    col_w = (22, 5, 6, 8, 8, 8, 8)
+def print_top_audit(rows: list[tuple[str, str, float, float, float, int]]) -> None:
+    """rows: (player, team, mpg, pts_val, def_val, base_pr)."""
+    col_w = (22, 5, 6, 8, 8, 8)
     header = (
         f"{'Player':<{col_w[0]}} | {'Team':<{col_w[1]}} | "
         f"{'MPG':>{col_w[2]}} | {'Pts_Val':>{col_w[3]}} | "
-        f"{'Ast_Val':>{col_w[4]}} | {'Def_Val':>{col_w[5]}} | {'Base PR':>{col_w[6]}}"
+        f"{'Def_Val':>{col_w[4]}} | {'Base PR':>{col_w[5]}}"
     )
-    print(f"Top {TOP_N} by Base PR ({TARGET_SEASON}) — per-game value × (MPG/30)", flush=True)
+    print(
+        f"Top {TOP_N} by Base PR ({TARGET_SEASON}) v2 — per-game raw × (MPG/30)",
+        flush=True,
+    )
     print(header, flush=True)
     print("-" * len(header), flush=True)
-    for pn, tm, mpg, pv, av, dv, pr in rows:
+    for pn, tm, mpg, pv, dv, pr in rows:
         print(
             f"{pn:<{col_w[0]}} | {tm:<{col_w[1]}} | {mpg:>{col_w[2]}.1f} | "
-            f"{pv:>{col_w[3]}.1f} | {av:>{col_w[4]}.1f} | {dv:>{col_w[5]}.1f} | {pr:>{col_w[6]}}",
+            f"{pv:>{col_w[3]}.1f} | {dv:>{col_w[4]}.1f} | {pr:>{col_w[5]}}",
             flush=True,
         )
     print(flush=True)
@@ -226,7 +205,7 @@ def main() -> None:
         )
 
         rows_out: list[tuple[str, str, str, int, int, float]] = []
-        report: list[tuple[str, str, float, float, float, float, int]] = []
+        report: list[tuple[str, str, float, float, float, int]] = []
 
         for row in raw_rows:
             pn = row.get("player_name")
@@ -237,21 +216,11 @@ def main() -> None:
             out = compute_row(row)
             if out is None:
                 continue
-            base_pr, mpg, pillars = out
+            base_pr, mpg, pts_score, def_score = out
             gp = fint(row.get("gp")) or 0
             team_s = str(team).strip()
             rows_out.append((pn, team_s, TARGET_SEASON, base_pr, gp, mpg))
-            report.append(
-                (
-                    pn,
-                    team_s,
-                    mpg,
-                    pillars["pts_val"],
-                    pillars["ast_val"],
-                    pillars["def_val"],
-                    base_pr,
-                )
-            )
+            report.append((pn, team_s, mpg, pts_score, def_score, base_pr))
 
         con.executemany(
             """
@@ -263,7 +232,7 @@ def main() -> None:
         )
         con.commit()
 
-        report.sort(key=lambda x: (-x[6], -x[2], x[0]))
+        report.sort(key=lambda x: (-x[5], -x[2], x[0]))
         print_top_audit(report[:TOP_N])
     finally:
         con.close()
