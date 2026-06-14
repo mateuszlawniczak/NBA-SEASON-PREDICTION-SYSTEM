@@ -49,15 +49,15 @@ st.set_page_config(
  
 # Signature palette: dark slate court with a single hardwood-amber accent.
 PALETTE = {
-    "bg":       "#0f1115",
-    "surface":  "#161a22",
-    "surface2": "#1c2230",
-    "border":   "#232a3a",
-    "text":     "#e6e9ef",
-    "muted":    "#8b93a7",
-    "accent":   "#e8913a",   # hardwood amber — the one bold note
-    "accent_d": "#b76a22",
-    "good":     "#56b89a",
+    "bg":       "#000000",
+    "surface":  "#000000",
+    "surface2": "#000000",
+    "border":   "#ffffff",
+    "text":     "#ffffff",
+    "muted":    "#ffffff",
+    "accent":   "#ffffff",
+    "accent_d": "#cccccc",
+    "good":     "#ffffff",
 }
  
 NAV_ITEMS = [
@@ -76,13 +76,21 @@ def inject_css() -> None:
     st.markdown(
         f"""
         <style>
+        /* ---- Google font for the brand ---- */
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800&display=swap');
+
         /* ---- Force dark surface regardless of user's base theme ---- */
         .stApp {{ background: {PALETTE['bg']}; color: {PALETTE['text']}; }}
-        .block-container {{ padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1240px; }}
+        /* Lower the whole page so the brand clears Streamlit's native top-right
+           menu (Deploy / ⋮ toolbar). */
+        .block-container {{ padding-top: 4.5rem; padding-bottom: 3rem; max-width: 1240px; }}
         section.main > div {{ background: transparent; }}
  
         /* Kill the sidebar entirely in case anything tries to mount it */
         section[data-testid="stSidebar"] {{ display: none !important; }}
+
+        /* Nuke Streamlit's default dark-gray top bar */
+        header[data-testid="stHeader"] {{ background-color: #000000 !important; }}
  
         h1, h2, h3, h4 {{ color: {PALETTE['text']}; letter-spacing: -0.01em; }}
         p, li, label, span {{ color: {PALETTE['text']}; }}
@@ -91,12 +99,29 @@ def inject_css() -> None:
  
         /* ---- Brand header ---- */
         .brand {{
-            font-weight: 800; font-size: 2.1rem; line-height: 1;
+            font-family: 'Poppins', sans-serif;
+            font-weight: 800; font-size: 3.92rem; line-height: 1;
             letter-spacing: -0.03em; margin: 0 0 .15rem 0;
+            text-align: center;
         }}
         .brand .dot {{ color: {PALETTE['accent']}; }}
-        .brand-sub {{ color: {PALETTE['muted']}; font-size: .9rem; margin-bottom: 1.1rem; }}
- 
+        .brand-sub {{
+            color: #ffffff !important; font-size: 1.1rem; margin-bottom: 2.5rem;
+            text-align: center;
+        }}
+
+        /* ---- Left sidebar: small logo above nav, note below ---- */
+        .eop-logo {{
+            font-family: 'Poppins', sans-serif;
+            font-weight: 800; font-size: .82rem; letter-spacing: .12em;
+            text-transform: uppercase; color: #ffffff;
+            margin: 0 0 1.4rem 6px;
+        }}
+        .eop-note {{
+            font-size: .74rem; line-height: 1.4; color: #ffffff; opacity: .55;
+            margin: 1.4rem 0 0 6px;
+        }}
+
         /* ---- Card wrapper used across panels ---- */
         .eop-card {{
             background: {PALETTE['surface']};
@@ -107,41 +132,103 @@ def inject_css() -> None:
         }}
         .eop-eyebrow {{
             text-transform: uppercase; letter-spacing: .14em;
-            font-size: .68rem; color: {PALETTE['muted']}; margin-bottom: .5rem;
+            font-size: .68rem; color: #ffffff !important; opacity: 1 !important;
+            margin-bottom: .5rem;
         }}
  
-        /* ---- Left nav: turn a radio group into clean menu blocks ---- */
-        div[role="radiogroup"] {{ gap: 6px; }}
+        /* ---- Left nav: clean, transparent text links stacked vertically ---- */
+        div[role="radiogroup"] {{ gap: 2px; }}
         /* hide the actual radio circle (first child div of each label) */
         div[role="radiogroup"] > label > div:first-child {{ display: none !important; }}
         div[role="radiogroup"] > label {{
             display: flex; align-items: center;
             width: 100%;
-            padding: 11px 14px;
+            padding: 7px 6px;
             margin: 0;
-            border: 1px solid transparent;
-            border-radius: 12px;
-            background: {PALETTE['surface']};
-            color: {PALETTE['text']};
-            font-weight: 600; font-size: .98rem;
+            border: none;
+            background: transparent;
+            color: {PALETTE['muted']};
+            font-weight: 500; font-size: .98rem;
             cursor: pointer;
-            transition: background .12s ease, border-color .12s ease, transform .04s ease;
+            transition: color .12s ease;
         }}
         div[role="radiogroup"] > label:hover {{
-            background: {PALETTE['surface2']};
-            border-color: {PALETTE['border']};
+            background: transparent;
+            color: {PALETTE['text']};
         }}
-        /* selected block (modern :has — Streamlit runs in evergreen browsers) */
+        div[role="radiogroup"] > label:hover p {{
+            color: #ffffff !important; font-weight: 900 !important;
+        }}
+        /* selected link (modern :has — Streamlit runs in evergreen browsers) */
         div[role="radiogroup"] > label:has(input:checked) {{
-            background: {PALETTE['surface2']};
-            border-color: {PALETTE['accent']};
-            box-shadow: inset 3px 0 0 {PALETTE['accent']};
+            background: transparent;
         }}
-        div[role="radiogroup"] > label:has(input:checked) p {{ color: {PALETTE['accent']}; }}
-        div[role="radiogroup"] label p {{ font-weight: 600; margin: 0; }}
+        div[role="radiogroup"] > label:has(input:checked) p {{
+            color: #ffffff !important; font-weight: 900 !important;
+        }}
+        div[role="radiogroup"] label p {{
+            margin: 0; color: {PALETTE['muted']}; font-weight: 500;
+            transition: color .12s ease, font-weight .12s ease;
+        }}
  
         /* ---- Right panel widgets ---- */
         .stCheckbox, .stSlider, .stSelectbox, .stRadio {{ margin-bottom: .35rem; }}
+
+        /* ---- Checkboxes: stark black box, white border, white mark ---- */
+        [data-baseweb="checkbox"] span[data-baseweb] {{
+            background-color: #000000 !important;
+            border: 1px solid #ffffff !important;
+        }}
+        [data-baseweb="checkbox"] input:checked + span[data-baseweb],
+        [data-baseweb="checkbox"] span[aria-checked="true"] {{
+            background-color: #ffffff !important;
+            border: 1px solid #ffffff !important;
+        }}
+        /* the checkmark glyph turns black so it reads on the white box */
+        [data-baseweb="checkbox"] input:checked + span[data-baseweb] svg,
+        [data-baseweb="checkbox"] span[aria-checked="true"] svg {{
+            color: #000000 !important; fill: #000000 !important; stroke: #000000 !important;
+        }}
+        /* Override Streamlit's primary (red) checkbox fill — force white box ---- */
+        div[data-baseweb="checkbox"] > div {{ border-color: #ffffff !important; }}
+        div[data-baseweb="checkbox"] > div[data-checked="true"] {{
+            background-color: #ffffff !important; border-color: #ffffff !important;
+        }}
+        div[data-baseweb="checkbox"] > div[data-checked="true"] svg {{ fill: #000000 !important; }}
+
+        /* ---- Right filters: force all checkbox / radio text to white ---- */
+        .stCheckbox label, .stRadio label,
+        .stCheckbox label *, .stRadio label *,
+        .stCheckbox div, .stRadio div {{ color: #ffffff !important; }}
+
+        /* ---- Strip gray from every interactive widget label ---- */
+        .stCheckbox label p, .stRadio label p,
+        div[role="radiogroup"] label p,
+        .stSelectbox label p, .stSlider label p {{ color: #ffffff !important; }}
+
+        /* ---- Right filters: bold the label on hover / active ---- */
+        .stCheckbox label:hover,
+        .stRadio label:hover,
+        .stCheckbox label:hover *,
+        .stRadio label:hover * {{
+            color: #ffffff !important; font-weight: 900 !important;
+        }}
+        .stCheckbox label:has(input:checked),
+        .stRadio label:has(input:checked),
+        .stCheckbox label:has(input:checked) *,
+        .stRadio label:has(input:checked) * {{
+            color: #ffffff !important; font-weight: 900 !important;
+        }}
+
+        /* ---- Grouped filter boxes (st.container(border=True)) ---- */
+        div[data-testid="stVerticalBlockBorderWrapper"] {{
+            background: {PALETTE['surface']};
+            border: 1px solid rgba(255, 255, 255, 0.16) !important;
+            border-radius: 14px;
+            padding: 14px 16px;
+            margin-bottom: 14px;
+        }}
+        div[data-testid="stVerticalBlockBorderWrapper"] .stRadio {{ margin-bottom: 0; }}
  
         /* ---- Buttons ---- */
         .stButton > button {{
@@ -152,13 +239,93 @@ def inject_css() -> None:
         }}
         .stButton > button:hover {{ background: {PALETTE['accent_d']}; color: #fff; }}
  
-        /* ---- Data tables ---- */
+        /* ---- Data tables: pure black cells, thin white gridlines ---- */
         [data-testid="stDataFrame"] {{
-            border: 1px solid {PALETTE['border']};
-            border-radius: 12px; overflow: hidden;
+            border: 1px solid #ffffff !important;
+            border-radius: 0; overflow: hidden;
+            font-size: 1.15rem !important;
+            background: #000000 !important;
+        }}
+        [data-testid="stDataFrame"] th,
+        [data-testid="stDataFrame"] td,
+        [data-testid="stDataFrame"] tr {{
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            text-align: center !important;
+            border-bottom: 1px solid #ffffff !important;
+            border-right: 1px solid #ffffff !important;
+        }}
+        [data-testid="stDataFrame"] th,
+        [data-testid="stDataFrame"] th div {{
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            font-weight: 900 !important;
+        }}
+        [data-testid="stDataFrame"] td,
+        [data-testid="stDataFrame"] td div {{
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            text-align: center !important;
         }}
         [data-testid="stMetricValue"] {{ color: {PALETTE['accent']}; }}
  
+        /* ---- Team picker: Twitter/X-style pill multiselect ---- */
+        /* The main selectbox control */
+        div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div {{
+            background-color: #000000 !important;
+            border: 1px solid #ffffff !important;
+            border-radius: 9999px !important;
+            box-shadow: none !important;
+            color: #ffffff !important;
+        }}
+        div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div:focus-within {{
+            border: 1px solid #ffffff !important;
+            box-shadow: none !important;
+        }}
+        /* Typed text + placeholder inside the control */
+        div[data-testid="stMultiSelect"] input {{ color: #ffffff !important; }}
+        div[data-testid="stMultiSelect"] [data-baseweb="select"] div {{ color: #ffffff !important; }}
+        /* Selected team "pills" (tags) */
+        div[data-testid="stMultiSelect"] span[data-baseweb="tag"] {{
+            background-color: #000000 !important;
+            border: 1px solid #ffffff !important;
+            border-radius: 9999px !important;
+            color: #ffffff !important;
+        }}
+        div[data-testid="stMultiSelect"] span[data-baseweb="tag"] span,
+        div[data-testid="stMultiSelect"] span[data-baseweb="tag"] svg {{
+            color: #ffffff !important; fill: #ffffff !important;
+        }}
+        /* Dropdown chevron + clear icons */
+        div[data-testid="stMultiSelect"] svg {{ fill: #ffffff !important; color: #ffffff !important; }}
+        /* Enlarge the "x" on each selected pill so it's easy to click */
+        div[data-testid="stMultiSelect"] span[data-baseweb="tag"] [role="presentation"],
+        div[data-testid="stMultiSelect"] span[data-baseweb="tag"] svg {{
+            transform: scale(1.5);
+            cursor: pointer;
+        }}
+        /* Enlarge the main clear-all "x" on the right of the input box */
+        div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div > div:last-child svg {{
+            transform: scale(1.5);
+            cursor: pointer;
+        }}
+        /* The popover dropdown menu of options */
+        div[data-baseweb="popover"] ul[role="listbox"],
+        div[data-baseweb="popover"] [data-baseweb="menu"] {{
+            background-color: #000000 !important;
+            border: 1px solid #ffffff !important;
+            border-radius: 14px !important;
+        }}
+        div[data-baseweb="popover"] li[role="option"] {{
+            background-color: #000000 !important;
+            color: #ffffff !important;
+        }}
+        div[data-baseweb="popover"] li[role="option"]:hover,
+        div[data-baseweb="popover"] li[aria-selected="true"] {{
+            background-color: #ffffff !important;
+            color: #000000 !important;
+        }}
+
         /* tighten the three columns visually */
         div[data-testid="column"] {{ padding: 0 .35rem; }}
         </style>
@@ -210,12 +377,74 @@ def load_sim_results() -> pd.DataFrame:
  
 @st.cache_data(show_spinner=False)
 def load_player_pr() -> pd.DataFrame:
-    """ULTIMATE_PR — player PR ratings and positions (drives Tab 1 filters)."""
+    """ULTIMATE_PR — player PR ratings and positions (drives Tab 1 filters).
+
+    team_abbr is resolved in three passes so injured veterans and incoming
+    rookies don't fall through as None:
+      1. player_starting_teams_25_26 — projected starters for this season.
+      2. player_stats_basic         — each player's most recent historical team.
+      3. rookie_data                — the drafting team for 2025 incoming rookies.
+    A conference column is then derived so the Conference / Team filters apply to
+    the player table just like the projections table."""
     con = _ro_connect()
     try:
         df = pd.read_sql_query("SELECT * FROM ULTIMATE_PR", con)
+
+        # --- Primary: projected starting teams for 2025-26 ---
+        try:
+            teams = pd.read_sql_query(
+                "SELECT player_name, team_abbr FROM player_starting_teams_25_26", con
+            )
+            df = df.merge(teams, on="player_name", how="left")
+        except Exception:
+            df["team_abbr"] = pd.NA
+
+        def _missing() -> pd.Series:
+            return df["team_abbr"].isna() | (df["team_abbr"].astype(str).str.strip() == "")
+
+        # --- Fallback 1: most recent team from player_stats_basic ---
+        if _missing().any():
+            try:
+                hist = pd.read_sql_query(
+                    "SELECT player_name, team_abbr, season FROM player_stats_basic", con
+                )
+                # Latest season first, then keep one row per player.
+                hist = (hist.sort_values("season", ascending=False)
+                            .drop_duplicates(subset="player_name", keep="first"))
+                hist_map = dict(zip(hist["player_name"], hist["team_abbr"]))
+                mask = _missing()
+                df.loc[mask, "team_abbr"] = df.loc[mask, "player_name"].map(hist_map)
+            except Exception:
+                pass
+
+        # --- Fallback 2: drafting team for 2025 incoming rookies ---
+        if _missing().any():
+            try:
+                rookies = pd.read_sql_query(
+                    "SELECT player_name, draft_year, drafting_signing_team "
+                    "FROM rookie_data", con
+                )
+                # Prefer the 2025 draft class, but keep others as a backstop.
+                rookies = rookies.sort_values(
+                    "draft_year", ascending=False, na_position="last"
+                )
+                if (rookies["draft_year"] == 2025).any():
+                    pref = rookies[rookies["draft_year"] == 2025]
+                    rest = rookies[rookies["draft_year"] != 2025]
+                    rookies = pd.concat([pref, rest])
+                rookies = rookies.drop_duplicates(subset="player_name", keep="first")
+                rookie_map = dict(
+                    zip(rookies["player_name"], rookies["drafting_signing_team"])
+                )
+                mask = _missing()
+                df.loc[mask, "team_abbr"] = df.loc[mask, "player_name"].map(rookie_map)
+            except Exception:
+                pass
     finally:
         con.close()
+
+    # --- Final cleanup: (re)derive conference from the resolved team_abbr ---
+    df["conference"] = df["team_abbr"].map(mc.TEAM_CONFERENCE).fillna("—")
     return df
  
  
@@ -298,19 +527,31 @@ def run_inmemory_sim(profiles, abbrs, n_sims: int, seed: int = 20260514) -> pd.D
 # ---------------------------------------------------------------------------
  
 def style_table(df: pd.DataFrame, heat_col: str | None = None):
+    # Stark black/white: flat black cells, white text, no colored heatmap.
+    # `heat_col` is accepted for call-site compatibility but intentionally unused.
     sty = df.style.set_properties(
         **{
-            "background-color": PALETTE["surface"],
-            "color": PALETTE["text"],
-            "border-color": PALETTE["border"],
+            "background-color": "#000000",
+            "color": "#ffffff",
+            "border-color": "#ffffff",
+            "text-align": "center",
         }
     )
-    if heat_col and heat_col in df.columns:
-        try:
-            sty = sty.background_gradient(cmap="YlOrBr", subset=[heat_col])
-        except Exception:
-            # matplotlib not present — degrade gracefully to flat dark cells
-            pass
+    # Also force black on header + index cells (th) so the frozen Team
+    # column and the header row don't fall back to the gray default theme.
+    sty = sty.set_table_styles(
+        [
+            {
+                "selector": "th",
+                "props": [
+                    ("background-color", "#000000"),
+                    ("color", "#ffffff"),
+                    ("border-color", "#ffffff"),
+                    ("text-align", "center"),
+                ],
+            }
+        ]
+    )
     fmt = {c: "{:.2f}" for c in df.select_dtypes("float").columns}
     if fmt:
         sty = sty.format(fmt)
@@ -321,21 +562,127 @@ def style_table(df: pd.DataFrame, heat_col: str | None = None):
 # VIEWS
 # ===========================================================================
  
+_VIEW_TOGGLES = ["show_main", "show_precise", "show_players"]
+
+
+def _exclusive_toggle(active_key: str) -> None:
+    """Radio-like behaviour for the three top checkboxes: turning one on forces
+    the other two off. Re-checking the only active box keeps it on."""
+    if st.session_state.get(active_key):
+        for k in _VIEW_TOGGLES:
+            if k != active_key:
+                st.session_state[k] = False
+    else:
+        # Don't allow zero selected — bounce the user back to "Main odds".
+        if not any(st.session_state.get(k) for k in _VIEW_TOGGLES):
+            st.session_state["show_main"] = True
+
+
+_POS_KEYS = ["pos_g", "pos_f", "pos_c"]
+
+
+def _pos_toggle(changed_key: str) -> None:
+    """Cross-link the position checkboxes:
+      * Checking "ALL" clears Guards / Forwards / Centers.
+      * "ALL" is sticky — trying to uncheck it while no specific position is
+        selected snaps it back on (never leaves the table blank).
+      * Checking any specific position clears "ALL".
+      * Unchecking the last specific position falls back to "ALL".
+    """
+    if changed_key == "pos_all":
+        if st.session_state.get("pos_all"):
+            for k in _POS_KEYS:
+                st.session_state[k] = False
+        elif not any(st.session_state.get(k) for k in _POS_KEYS):
+            # Can't turn ALL off unless a specific position is active.
+            st.session_state["pos_all"] = True
+    else:
+        if st.session_state.get(changed_key):
+            st.session_state["pos_all"] = False
+        elif not any(st.session_state.get(k) for k in _POS_KEYS):
+            st.session_state["pos_all"] = True
+
+
+def _conf_mismatch_msg(selected_teams: list[str]) -> str:
+    """Snarky empty-state line when a team/conference filter combo yields nothing."""
+    if selected_teams:
+        team = selected_teams[0]
+        actual = mc.TEAM_CONFERENCE.get(team, "Unknown")
+        return f"{team} is in the {actual} conference broski."
+    return "Nothing matches those filters broski."
+
+
 def view_my_system(col_main, col_filters) -> None:
+    st.markdown(
+        "<style> [data-testid='stDataFrame'] th { font-size: 1.15rem !important; } </style>",
+        unsafe_allow_html=True,
+    )
+    # Seed defaults once so the exclusive toggles start with "Main odds" on.
+    if "show_main" not in st.session_state:
+        st.session_state["show_main"] = True
+        st.session_state["show_precise"] = False
+        st.session_state["show_players"] = False
     # ---- right panel: filters tied to this tab ----
     with col_filters:
         st.markdown('<div class="eop-eyebrow">Filters</div>', unsafe_allow_html=True)
-        show_main = st.checkbox("Main odds", value=True,
-                                help="Championship / Finals / Conf Finals odds")
-        show_personal = st.checkbox("Team personal odds", value=False,
-                                    help="Avg wins, make-playoffs %, projected seed")
-        conf_pick = st.radio("Conference", ["Both", "East", "West"], horizontal=True)
-        st.markdown("---")
-        show_players = st.checkbox("Show players PR", value=False)
-        st.caption("Position")
-        pos_g = st.checkbox("Guards", value=True)
-        pos_f = st.checkbox("Forwards", value=True)
-        pos_c = st.checkbox("Centers", value=True)
+
+        # Box 1 — mutually exclusive view toggles + (conditional) position filters
+        pos_all = True
+        pos_g = pos_f = pos_c = False
+        with st.container(border=True):
+            show_main = st.checkbox(
+                "Main odds", key="show_main",
+                on_change=_exclusive_toggle, args=("show_main",),
+                help="Championship / Finals / Conf Finals odds")
+            show_precise = st.checkbox(
+                "More precise", key="show_precise",
+                on_change=_exclusive_toggle, args=("show_precise",),
+                help="All seeds (1–15) and every playoff stage")
+            show_players = st.checkbox(
+                "Show players PR", key="show_players",
+                on_change=_exclusive_toggle, args=("show_players",))
+
+            # Position filters live right under the players toggle and only
+            # appear when the player table is active.
+            if show_players:
+                # Seed position state the moment the player section appears so
+                # "ALL" starts checked instead of blank. Must run before the
+                # widgets are instantiated below.
+                for _k, _default in (("pos_all", True), ("pos_g", False),
+                                     ("pos_f", False), ("pos_c", False)):
+                    if _k not in st.session_state:
+                        st.session_state[_k] = _default
+                st.caption("Position")
+                pos_all = st.checkbox("ALL", key="pos_all",
+                                      on_change=_pos_toggle, args=("pos_all",))
+                pos_g = st.checkbox("Guards", key="pos_g",
+                                    on_change=_pos_toggle, args=("pos_g",))
+                pos_f = st.checkbox("Forwards", key="pos_f",
+                                    on_change=_pos_toggle, args=("pos_f",))
+                pos_c = st.checkbox("Centers", key="pos_c",
+                                    on_change=_pos_toggle, args=("pos_c",))
+
+        # Box 2 — global conference filter (projections + players)
+        with st.container(border=True):
+            conf_pick = st.radio("Conference", ["Both", "East", "West"],
+                                 horizontal=True)
+
+        # Box 3 — Twitter/X-style team search (projections + players)
+        st.markdown('<div class="eop-eyebrow">PICK SPECIFIC TEAM</div>',
+                    unsafe_allow_html=True)
+        try:
+            team_options = sorted(
+                load_sim_results()["team"].dropna().astype(str).unique().tolist()
+            )
+        except Exception:
+            team_options = []
+        selected_teams = st.multiselect(
+            "PICK SPECIFIC TEAM",
+            options=team_options,
+            default=[],
+            placeholder="",
+            label_visibility="collapsed",
+        )
  
     # ---- main feed ----
     with col_main:
@@ -345,7 +692,7 @@ def view_my_system(col_main, col_filters) -> None:
             '— Monte-Carlo baseline</div>',
             unsafe_allow_html=True,
         )
- 
+
         try:
             df = load_sim_results().copy()
         except Exception as e:
@@ -361,13 +708,24 @@ def view_my_system(col_main, col_filters) -> None:
  
         # choose which columns to surface based on the checkboxes
         cols = ["team", "conference"]
-        if show_main:
-            cols += [c for c in ["champion_pct", "made_finals_pct", "conf_finals_pct"]
-                     if c in df.columns]
-        if show_personal:
+        if show_precise:
+            # Full detail: every seed (1–15) and every playoff stage.
+            seed_cols = sorted(
+                [c for c in df.columns
+                 if c.startswith("seed_") and c.endswith("_pct")],
+                key=lambda c: int(c.split("_")[1]),
+            )
+            stage_cols = [c for c in ["first_round_pct", "second_round_pct",
+                                      "conf_finals_pct", "made_finals_pct",
+                                      "champion_pct"] if c in df.columns]
             cols += [c for c in ["avg_wins", "make_playoffs_pct", "proj_seed"]
                      if c in df.columns]
-        if not show_main and not show_personal:
+            cols += seed_cols
+            cols += stage_cols
+        elif show_main:
+            cols += [c for c in ["champion_pct", "made_finals_pct", "conf_finals_pct"]
+                     if c in df.columns]
+        else:
             cols += [c for c in ["champion_pct", "avg_wins", "proj_seed"] if c in df.columns]
  
         sort_key = "champion_pct" if "champion_pct" in df.columns else cols[-1]
@@ -378,15 +736,42 @@ def view_my_system(col_main, col_filters) -> None:
             "made_finals_pct": "Finals %", "conf_finals_pct": "Conf Finals %",
             "avg_wins": "Avg Wins", "make_playoffs_pct": "Playoffs %",
             "proj_seed": "Proj Seed",
+            "first_round_pct": "First Round %", "second_round_pct": "Second Round %",
         }
+        rename.update({f"seed_{i}_pct": f"Seed {i} %" for i in range(1, 16)})
         out = out.rename(columns=rename)
         heat = "Champ %" if "Champ %" in out.columns else None
- 
+
+        # Team filter: keep only the explicitly selected team abbreviations.
+        if selected_teams:
+            out = out[out["Team"].isin(selected_teams)]
+
+        # Unified empty state: a Conference + Team mismatch wipes the dataset for
+        # BOTH tables, so handle it once here before any subheaders are drawn.
+        if out.empty:
+            st.markdown(
+                '<div style="text-align: center; color: white; font-weight: bold; '
+                f'font-size: 24px; margin-top: 50px;">{_conf_mismatch_msg(selected_teams)}'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            # st.image("assets/error_pic.png", use_container_width=True)
+            return
+
         st.markdown('<div class="eop-eyebrow">Baseline projections</div>',
                     unsafe_allow_html=True)
-        st.dataframe(style_table(out, heat_col=heat),
-                     use_container_width=True, hide_index=True, height=560)
- 
+        # Freeze the Team column (keep header sticky) by making Team the index.
+        out = out.set_index("Team")
+        if selected_teams:
+            # Size the table to the visible rows so there are no empty cells.
+            row_px = 35
+            dyn_height = int((len(out) + 1) * row_px + 3)
+            st.dataframe(style_table(out, heat_col=heat),
+                         use_container_width=True, height=dyn_height)
+        else:
+            st.dataframe(style_table(out, heat_col=heat),
+                         use_container_width=True, height=560)
+
         if show_players:
             st.markdown('<div class="eop-eyebrow">Player power ratings</div>',
                         unsafe_allow_html=True)
@@ -395,22 +780,36 @@ def view_my_system(col_main, col_filters) -> None:
             except Exception as e:
                 st.caption(f"ULTIMATE_PR unavailable: {e}")
                 return
- 
+
+            # Apply the same global filters used on the projections table.
+            if conf_pick != "Both" and "conference" in pdf.columns:
+                pdf = pdf[pdf["conference"] == conf_pick]
+            if selected_teams and "team_abbr" in pdf.columns:
+                pdf = pdf[pdf["team_abbr"].isin(selected_teams)]
+
             pos_col = next((c for c in ["mapped_position", "position", "pos"]
                             if c in pdf.columns), None)
-            wanted = {"G": pos_g, "F": pos_f, "C": pos_c}
-            keep = [k for k, v in wanted.items() if v]
-            if pos_col and keep:
-                pdf = pdf[pdf[pos_col].astype(str).str.strip().str.upper().isin(keep)]
+            selected_pos = [k for k, v in {"G": pos_g, "F": pos_f, "C": pos_c}.items() if v]
+            # "ALL" (or nothing selected) → show every position.
+            if pos_all or not selected_pos:
+                selected_pos = ["G", "F", "C"]
+            if pos_col:
+                pdf = pdf[pdf[pos_col].astype(str).str.strip().str.upper().isin(selected_pos)]
  
             pr_col = "pr" if "pr" in pdf.columns else None
             if pr_col:
                 pdf = pdf.sort_values(pr_col, ascending=False)
             display_cols = [c for c in ["player_name", pos_col, pr_col,
-                                        "playoff_pr", "team_abbr"] if c in pdf.columns]
+                                        "playoff_pr", "team_abbr", "conference"]
+                            if c in pdf.columns]
+            pdisp = pdf[display_cols].reset_index(drop=True).rename(
+                columns={"player_name": "Player", "team_abbr": "Team",
+                         "conference": "Conf", "pr": "PR", "playoff_pr": "Playoff PR",
+                         "mapped_position": "Pos", "position": "Pos", "pos": "Pos"}
+            )
             st.dataframe(
-                style_table(pdf[display_cols].reset_index(drop=True),
-                            heat_col=pr_col if pr_col in display_cols else None),
+                style_table(pdisp,
+                            heat_col="PR" if "PR" in pdisp.columns else None),
                 use_container_width=True, hide_index=True, height=440,
             )
  
@@ -643,20 +1042,17 @@ shipping.*
  
 def main() -> None:
     inject_css()
- 
-    col_nav, col_main, col_filters = st.columns([1, 2.5, 1], gap="large")
- 
+
+    # ---- Borderless 3-column shell: nav (left) | feed (center) | filters (right) ----
+    col_nav, col_main, col_filters = st.columns([1, 3, 1], gap="large")
+
     with col_nav:
-        st.markdown('<div class="eop-eyebrow" style="margin-bottom:.7rem;">'
-                    'EYE ON PAPER</div>', unsafe_allow_html=True)
+        st.markdown('<div class="eop-logo">EYE ON PAPER</div>',
+                    unsafe_allow_html=True)
         nav = st.radio("nav", NAV_ITEMS, label_visibility="collapsed")
-        st.markdown(
-            f'<div style="margin-top:1.4rem; color:{PALETTE["muted"]}; '
-            'font-size:.72rem; line-height:1.5;">Read-only demo · '
-            'database untouched</div>',
-            unsafe_allow_html=True,
-        )
- 
+        st.markdown('<div class="eop-note">Read-only demo · database untouched</div>',
+                    unsafe_allow_html=True)
+
     if nav == "My System":
         view_my_system(col_main, col_filters)
     elif nav == "Adjust Variables":

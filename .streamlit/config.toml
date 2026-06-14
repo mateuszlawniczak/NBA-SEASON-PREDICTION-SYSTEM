@@ -1,0 +1,7 @@
+[theme]
+base = "dark"
+primaryColor = "#ffffff"
+backgroundColor = "#1f1f1f"
+# Drives the st.dataframe header row background (glide data grid).
+secondaryBackgroundColor = "#000000"
+textColor = "#ffffff"
