@@ -337,7 +337,20 @@ def inject_css() -> None:
 # ---------------------------------------------------------------------------
 # Data access — strictly read-only, cached
 # ---------------------------------------------------------------------------
- 
+
+def _target_draft_year(season: str) -> int:
+    """Opening year of a season label, e.g. '2022-23' -> 2022."""
+    return int(season.split("-")[0])
+
+
+def _season_display(season: str) -> str:
+    """UI label: '2025-26' -> '2025–26'."""
+    parts = season.split("-")
+    if len(parts) == 2:
+        return f"{parts[0]}–{parts[1]}"
+    return season
+
+
 def _ro_connect() -> sqlite3.Connection:
     """Open nba_data.db in read-only mode. Guarantees the app cannot mutate it."""
     uri = f"file:{mc.DB_PATH}?mode=ro"
@@ -345,8 +358,26 @@ def _ro_connect() -> sqlite3.Connection:
  
  
 @st.cache_data(show_spinner=False)
-def load_sim_results() -> pd.DataFrame:
-    """simulation_results — baseline championship odds + seed projections (2025-26)."""
+def load_available_seasons() -> list[str]:
+    """Production simulation seasons, newest first."""
+    con = _ro_connect()
+    try:
+        rows = con.execute(
+            """
+            SELECT DISTINCT season
+            FROM simulation_results
+            WHERE run_id = 'production'
+            ORDER BY season DESC
+            """
+        ).fetchall()
+    finally:
+        con.close()
+    return [str(r[0]) for r in rows]
+
+
+@st.cache_data(show_spinner=False)
+def load_sim_results(season: str) -> pd.DataFrame:
+    """simulation_results — baseline championship odds + seed projections."""
     con = _ro_connect()
     try:
         df = pd.read_sql_query(
@@ -358,16 +389,20 @@ def load_sim_results() -> pd.DataFrame:
                    missed_playoffs_pct, first_round_pct, second_round_pct,
                    conf_finals_pct, finals_pct, champion_pct
             FROM simulation_results
-            WHERE season = '2025-26' AND run_id = 'production'
+            WHERE season = ? AND run_id = 'production'
             """,
             con,
+            params=(season,),
         )
     finally:
         con.close()
- 
+
+    if df.empty:
+        return df
+
     seed_cols = [c for c in df.columns if c.startswith("seed_") and c.endswith("_pct")]
     seed_cols = sorted(seed_cols, key=lambda c: int(c.split("_")[1]))
- 
+
     # Projected seed = the most probable seed; expected seed = probability-weighted.
     if seed_cols:
         seed_nums = np.array([int(c.split("_")[1]) for c in seed_cols])
@@ -388,14 +423,14 @@ def load_sim_results() -> pd.DataFrame:
  
  
 @st.cache_data(show_spinner=False)
-def load_player_pr() -> pd.DataFrame:
+def load_player_pr(season: str) -> pd.DataFrame:
     """ULTIMATE_PR — player PR ratings and positions (drives Tab 1 filters).
 
     team_abbr is resolved in three passes so injured veterans and incoming
     rookies don't fall through as None:
       1. player_starting_teams — projected starters for this season.
-      2. player_stats_basic         — each player's most recent historical team.
-      3. rookie_data                — the drafting team for 2025 incoming rookies.
+      2. player_stats_basic         — team at or before the selected season.
+      3. rookie_data                — drafting team for that season's draft class.
     A conference column is then derived so the Conference / Team filters apply to
     the player table just like the projections table."""
     con = _ro_connect()
@@ -404,20 +439,24 @@ def load_player_pr() -> pd.DataFrame:
             """
             SELECT player_name, pr, player_type, applied_effects, mapped_position
             FROM ULTIMATE_PR
-            WHERE season = '2025-26'
+            WHERE season = ?
             """,
             con,
+            params=(season,),
         )
+        if df.empty:
+            return df
 
-        # --- Primary: projected starting teams for 2025-26 ---
+        # --- Primary: projected starting teams for the selected season ---
         try:
             teams = pd.read_sql_query(
                 """
                 SELECT player_name, team_abbr
                 FROM player_starting_teams
-                WHERE season = '2025-26'
+                WHERE season = ?
                 """,
                 con,
+                params=(season,),
             )
             df = df.merge(teams, on="player_name", how="left")
         except Exception:
@@ -426,13 +465,14 @@ def load_player_pr() -> pd.DataFrame:
         def _missing() -> pd.Series:
             return df["team_abbr"].isna() | (df["team_abbr"].astype(str).str.strip() == "")
 
-        # --- Fallback 1: most recent team from player_stats_basic ---
+        # --- Fallback 1: team at selected season, or most recent season <= selected ---
         if _missing().any():
             try:
                 hist = pd.read_sql_query(
-                    "SELECT player_name, team_abbr, season FROM player_stats_basic", con
+                    "SELECT player_name, team_abbr, season FROM player_stats_basic",
+                    con,
                 )
-                # Latest season first, then keep one row per player.
+                hist = hist[hist["season"] <= season]
                 hist = (hist.sort_values("season", ascending=False)
                             .drop_duplicates(subset="player_name", keep="first"))
                 hist_map = dict(zip(hist["player_name"], hist["team_abbr"]))
@@ -441,20 +481,21 @@ def load_player_pr() -> pd.DataFrame:
             except Exception:
                 pass
 
-        # --- Fallback 2: drafting team for 2025 incoming rookies ---
+        # --- Fallback 2: drafting team for the selected season's draft class ---
         if _missing().any():
             try:
+                draft_year = _target_draft_year(season)
                 rookies = pd.read_sql_query(
                     "SELECT player_name, draft_year, drafting_signing_team "
-                    "FROM rookie_data", con
+                    "FROM rookie_data",
+                    con,
                 )
-                # Prefer the 2025 draft class, but keep others as a backstop.
                 rookies = rookies.sort_values(
                     "draft_year", ascending=False, na_position="last"
                 )
-                if (rookies["draft_year"] == 2025).any():
-                    pref = rookies[rookies["draft_year"] == 2025]
-                    rest = rookies[rookies["draft_year"] != 2025]
+                if (rookies["draft_year"] == draft_year).any():
+                    pref = rookies[rookies["draft_year"] == draft_year]
+                    rest = rookies[rookies["draft_year"] != draft_year]
                     rookies = pd.concat([pref, rest])
                 rookies = rookies.drop_duplicates(subset="player_name", keep="first")
                 rookie_map = dict(
@@ -646,9 +687,30 @@ def view_my_system(col_main, col_filters) -> None:
         st.session_state["show_main"] = True
         st.session_state["show_precise"] = False
         st.session_state["show_players"] = False
+
+    try:
+        season_options = load_available_seasons()
+    except Exception:
+        season_options = []
+    if not season_options:
+        with col_main:
+            st.warning(
+                "No production simulation seasons found. Run `run_monte_carlo.py` first."
+            )
+        return
+
     # ---- right panel: filters tied to this tab ----
     with col_filters:
         st.markdown('<div class="eop-eyebrow">Filters</div>', unsafe_allow_html=True)
+
+        with st.container(border=True):
+            selected_season = st.selectbox(
+                "Season",
+                options=season_options,
+                index=0,
+                format_func=_season_display,
+                help="Production Monte-Carlo baseline for this season.",
+            )
 
         # Box 1 — mutually exclusive view toggles + (conditional) position filters
         pos_all = True
@@ -696,7 +758,7 @@ def view_my_system(col_main, col_filters) -> None:
                     unsafe_allow_html=True)
         try:
             team_options = sorted(
-                load_sim_results()["team"].dropna().astype(str).unique().tolist()
+                load_sim_results(selected_season)["team"].dropna().astype(str).unique().tolist()
             )
         except Exception:
             team_options = []
@@ -710,21 +772,29 @@ def view_my_system(col_main, col_filters) -> None:
  
     # ---- main feed ----
     with col_main:
+        season_label = _season_display(selected_season)
         st.markdown(
-            '<div class="brand">EYE ON PAPER<span class="dot">.</span></div>'
-            '<div class="brand-sub">2025–26 championship odds &amp; seed projections '
+            f'<div class="brand">EYE ON PAPER<span class="dot">.</span></div>'
+            f'<div class="brand-sub">{season_label} championship odds &amp; seed projections '
             '— Monte-Carlo baseline</div>',
             unsafe_allow_html=True,
         )
 
         try:
-            df = load_sim_results().copy()
+            df = load_sim_results(selected_season).copy()
         except Exception as e:
             st.warning(
                 "Couldn't read `simulation_results`. Generate it by running "
                 "`run_monte_carlo.py` first."
             )
             st.caption(f"Details: {e}")
+            return
+
+        if df.empty:
+            st.info(
+                f"Limited data for {_season_display(selected_season)} — no production "
+                "simulation results are stored for this season yet."
+            )
             return
  
         if conf_pick != "Both":
@@ -800,9 +870,20 @@ def view_my_system(col_main, col_filters) -> None:
             st.markdown('<div class="eop-eyebrow">Player power ratings</div>',
                         unsafe_allow_html=True)
             try:
-                pdf = load_player_pr().copy()
+                pdf = load_player_pr(selected_season).copy()
             except Exception as e:
-                st.caption(f"ULTIMATE_PR unavailable: {e}")
+                st.info(
+                    f"Limited data for {_season_display(selected_season)} — player ratings "
+                    "could not be loaded."
+                )
+                st.caption(f"Details: {e}")
+                return
+
+            if pdf.empty:
+                st.info(
+                    f"Limited data for {_season_display(selected_season)} — no player "
+                    "power ratings are stored for this season."
+                )
                 return
 
             # Apply the same global filters used on the projections table.
@@ -831,6 +912,12 @@ def view_my_system(col_main, col_filters) -> None:
                          "conference": "Conf", "pr": "PR", "playoff_pr": "Playoff PR",
                          "mapped_position": "Pos", "position": "Pos", "pos": "Pos"}
             )
+            if pdisp.empty:
+                st.info(
+                    f"Limited data for {_season_display(selected_season)} — no players "
+                    "match the current filters."
+                )
+                return
             st.dataframe(
                 style_table(pdisp,
                             heat_col="PR" if "PR" in pdisp.columns else None),
@@ -838,6 +925,10 @@ def view_my_system(col_main, col_filters) -> None:
             )
  
  
+# Interactive sim tabs stay pinned to the current (2025-26) production season.
+INTERACTIVE_SIM_SEASON = "2025-26"
+
+
 def view_adjust_variables(col_main, col_filters) -> None:
     try:
         base_profiles, abbrs = load_base_profiles()
@@ -876,6 +967,11 @@ def view_adjust_variables(col_main, col_filters) -> None:
             'in memory. Your database is never touched.</div>',
             unsafe_allow_html=True,
         )
+        st.caption(
+            f"What-if analysis runs on the current "
+            f"({_season_display(INTERACTIVE_SIM_SEASON)}) season only. "
+            "Historical season browsing is available on My System."
+        )
  
         if not sim_ok:
             st.warning("Couldn't load team profiles from the database.")
@@ -912,7 +1008,9 @@ def view_adjust_variables(col_main, col_filters) -> None:
  
         # Compare against the stored baseline where available.
         try:
-            base = load_sim_results()[["team", "champion_pct", "avg_wins"]].rename(
+            base = load_sim_results(INTERACTIVE_SIM_SEASON)[
+                ["team", "champion_pct", "avg_wins"]
+            ].rename(
                 columns={"champion_pct": "base_champ", "avg_wins": "base_wins"}
             )
             merged = sim_df.merge(base, on="team", how="left")
