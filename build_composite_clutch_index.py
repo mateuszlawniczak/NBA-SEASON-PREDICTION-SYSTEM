@@ -25,6 +25,9 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8")
 from nba_api.stats.endpoints import LeagueDashPlayerStats, PlayerGameLogs
 from nba_api.stats.library.parameters import Period
 
+from season_utils import SeasonPair, parse_cli_seasons, trailing_three_seasons
+from leakage_guards import fmvp_names_before_target
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -52,8 +55,8 @@ PLAYOFF_MULTIPLIER = {
     -3: 0.75,
 }
 
-# Championship DNA: Finals MVPs (incl. 2024–25); matched with ASCII-folded names.
-FMVPS_ACTIVE = (
+# Legacy reference list (2025-26 production); active set is derived per target season.
+FMVPS_LEGACY_2025_26 = (
     "LeBron James",
     "Kevin Durant",
     "Kawhi Leonard",
@@ -74,7 +77,11 @@ def _norm_player_name(name: str) -> str:
     )
 
 
-FMVPS_SET = {_norm_player_name(n) for n in FMVPS_ACTIVE}
+FMVPS_SET = {_norm_player_name(n) for n in FMVPS_LEGACY_2025_26}
+
+
+def _fmvp_set_for_target(target_season: str) -> set[str]:
+    return {_norm_player_name(n) for n in fmvp_names_before_target(target_season)}
 
 
 def fetch_advanced_totals(
@@ -258,7 +265,26 @@ def elim_score_vec(elim_ts, reg_ts) -> np.ndarray:
     ).astype(int)
 
 
-def main() -> None:
+def main(source_season: str | None = None, target_season: str | None = None) -> None:
+    global SEASONS
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
+    SEASONS = trailing_three_seasons(source_season)
+    fmvp_set = _fmvp_set_for_target(target_season)
+    if target_season == "2025-26" and fmvp_set != FMVPS_SET:
+        print(
+            f"[warn] FMVP derive mismatch for {target_season!r}: "
+            f"derived={sorted(fmvp_set)!r} legacy={sorted(FMVPS_SET)!r}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[fmvp] {len(fmvp_set)} Finals MVP(s) before {target_season!r}",
+            flush=True,
+        )
+
     print("Step 1: Baseline Advanced (full game) ...", flush=True)
     reg_full = concat_seasons(SEASONS, SEASON_TYPE_REG, period=Period.default)
     time.sleep(PAUSE_S)
@@ -300,7 +326,7 @@ def main() -> None:
     is_fmvp = (
         df[NAME_COL]
         .astype(str)
-        .map(lambda n: _norm_player_name(n) in FMVPS_SET)
+        .map(lambda n: _norm_player_name(n) in fmvp_set)
         .to_numpy()
     )
     total = np.where(is_fmvp & (total < 0), 0, total)

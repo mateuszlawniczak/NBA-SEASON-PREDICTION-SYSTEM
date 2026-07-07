@@ -2,11 +2,11 @@
 calculate_rookie_projected_pr_25_26.py
 --------------------------------------
 Loads the 2025 draft class from rookie_data, joins ages from player_stats_basic
-(2025-26), derives draft/age tiers, looks up rookie_baselines.year_1_base_pr,
-and writes rookie_projected_pr_25_26.
+(target season), derives draft/age tiers, looks up rookie_baselines.year_1_base_pr,
+and writes rookie_projection.
 
 Does not ALTER or DROP any existing table except creating (if missing) and
-truncating/populating rookie_projected_pr_25_26 only.
+deleting/repopulating rookie_projection rows for the target season only.
 """
 
 from __future__ import annotations
@@ -16,14 +16,18 @@ import sqlite3
 import sys
 from typing import Any
 
+from season_utils import SeasonPair, parse_cli_seasons
+from leakage_guards import draft_year_for_target
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
-SEASON = "2025-26"
 DEFAULT_AGE = 20.0
 
 CREATE_ROOKIE_PROJECTED_PR = """
-CREATE TABLE IF NOT EXISTS rookie_projected_pr_25_26 (
-    player_name TEXT PRIMARY KEY,
-    rookie_pr   REAL NOT NULL
+CREATE TABLE IF NOT EXISTS rookie_projection (
+    player_name TEXT NOT NULL,
+    season      TEXT NOT NULL,
+    rookie_pr   REAL NOT NULL,
+    PRIMARY KEY (player_name, season)
 );
 """
 
@@ -60,14 +64,21 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8")
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-def main() -> None:
+def main(source_season: str | None = None, target_season: str | None = None) -> None:
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
+    _ = source_season
+    draft_year = draft_year_for_target(target_season)
+
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
         cur.execute("PRAGMA foreign_keys=ON;")
 
         cur.execute(CREATE_ROOKIE_PROJECTED_PR)
-        cur.execute("DELETE FROM rookie_projected_pr_25_26;")
+        cur.execute("DELETE FROM rookie_projection WHERE season = ?;", (target_season,))
 
         cur.execute(
             """
@@ -102,13 +113,13 @@ def main() -> None:
                       AND psb.season = ?
                 ) AS age_val
             FROM rookie_data AS rd
-            WHERE rd.draft_year = 2025
+            WHERE rd.draft_year = ?
             ORDER BY rd.player_name;
             """,
-            (SEASON,),
+            (target_season, draft_year),
         )
 
-        rows_out: list[tuple[str, float]] = []
+        rows_out: list[tuple[str, str, float]] = []
 
         for player_name_raw, draft_pick_raw, age_val in cur.fetchall():
             player_name = str(player_name_raw).strip()
@@ -131,14 +142,17 @@ def main() -> None:
                     f"draft_tier={dt!r}, age_tier={at!r}"
                 )
 
-            rows_out.append((player_name, baseline_map[key]))
+            rows_out.append((player_name, target_season, baseline_map[key]))
 
         cur.executemany(
-            "INSERT INTO rookie_projected_pr_25_26 (player_name, rookie_pr) VALUES (?, ?);",
+            """
+            INSERT INTO rookie_projection (player_name, season, rookie_pr)
+            VALUES (?, ?, ?);
+            """,
             rows_out,
         )
         con.commit()
-        print(f"rookie_projected_pr_25_26 refreshed: {len(rows_out)} row(s).")
+        print(f"rookie_projection refreshed: {len(rows_out)} row(s) for {target_season!r} (draft_year={draft_year}).")
     finally:
         con.close()
 

@@ -3,11 +3,11 @@ build_projected_team_pr_25_26.py
 --------------------------------
 9-man rotation engine: per-team positional draft using ``ULTIMATE_PR`` (``pr`` +
 ``mapped_position``), then coach and playstyle multipliers. Writes ONLY
-``projected_team_pr_25_26`` in nba_data.db; no other tables are altered.
+``team_projection`` in nba_data.db; no other tables are altered.
 
 Reads:
-  player_starting_teams_25_26, ULTIMATE_PR, team_coaches_25_26,
-  team_playstyle_data (season 2024-25), playstyle_multipliers
+  player_starting_teams, ULTIMATE_PR, team_coaches,
+  team_playstyle_data (source season), playstyle_multipliers
 """
 
 from __future__ import annotations
@@ -18,12 +18,14 @@ import sys
 
 import pandas as pd
 
+from season_utils import SeasonPair, parse_cli_seasons
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
 
 REQUIRED_TABLES = (
-    "player_starting_teams_25_26",
+    "player_starting_teams",
     "ULTIMATE_PR",
-    "team_coaches_25_26",
+    "team_coaches",
     "team_playstyle_data",
     "playstyle_multipliers",
 )
@@ -121,26 +123,44 @@ def _draft_rotation_for_team(roster_sorted: pd.DataFrame) -> tuple[pd.DataFrame,
     return drafted_df, base_team_pr, rotation_players
 
 
-def _load_frames(con: sqlite3.Connection) -> tuple[pd.DataFrame, ...]:
+def _load_frames(
+    con: sqlite3.Connection, source_season: str, target_season: str
+) -> tuple[pd.DataFrame, ...]:
     teams = pd.read_sql_query(
-        "SELECT player_name, team_abbr FROM player_starting_teams_25_26",
+        """
+        SELECT player_name, team_abbr
+        FROM player_starting_teams
+        WHERE season = ?
+        """,
         con,
+        params=(target_season,),
     )
     ultimate = pd.read_sql_query(
-        "SELECT player_name, pr, mapped_position FROM ULTIMATE_PR",
+        """
+        SELECT player_name, pr, mapped_position
+        FROM ULTIMATE_PR
+        WHERE season = ?
+        """,
         con,
+        params=(target_season,),
     )
     coaches = pd.read_sql_query(
-        "SELECT team_abbr, grade AS coach_grade FROM team_coaches_25_26",
+        """
+        SELECT team_abbr, grade AS coach_grade
+        FROM team_coaches
+        WHERE season = ?
+        """,
         con,
+        params=(target_season,),
     )
     playstyles = pd.read_sql_query(
         """
         SELECT team_abbr, playstyle
         FROM team_playstyle_data
-        WHERE season = '2024-25'
+        WHERE season = ?
         """,
         con,
+        params=(source_season,),
     )
     mult_df = pd.read_sql_query(
         "SELECT playstyle, multiplier FROM playstyle_multipliers",
@@ -149,9 +169,14 @@ def _load_frames(con: sqlite3.Connection) -> tuple[pd.DataFrame, ...]:
     return teams, ultimate, coaches, playstyles, mult_df
 
 
-def main() -> None:
+def main(source_season: str | None = None, target_season: str | None = None) -> None:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
 
     con = sqlite3.connect(DB_PATH)
     try:
@@ -165,7 +190,9 @@ def main() -> None:
             )
             return
 
-        teams, ultimate, coaches, playstyles, mult_df = _load_frames(con)
+        teams, ultimate, coaches, playstyles, mult_df = _load_frames(
+            con, source_season, target_season
+        )
 
         merged = teams.merge(ultimate, on="player_name", how="left")
         merged = _prepare_merged_roster(merged)
@@ -208,6 +235,7 @@ def main() -> None:
             out_rows.append(
                 (
                     tabbr,
+                    target_season,
                     base_team_pr,
                     display_grade if display_grade else None,
                     playstyle_label,
@@ -219,23 +247,26 @@ def main() -> None:
         cur = con.cursor()
         cur.execute(
             """
-            CREATE TABLE IF NOT EXISTS projected_team_pr_25_26 (
-                team_abbr         TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS team_projection (
+                team_abbr         TEXT NOT NULL,
+                season            TEXT NOT NULL,
                 base_team_pr      REAL NOT NULL,
                 coach_grade       TEXT,
                 playstyle         TEXT NOT NULL,
                 final_team_pr     REAL NOT NULL,
-                rotation_players  TEXT NOT NULL
+                rotation_players  TEXT NOT NULL,
+                PRIMARY KEY (team_abbr, season)
             )
             """
         )
-        cur.execute("DELETE FROM projected_team_pr_25_26;")
+        cur.execute("DELETE FROM team_projection WHERE season = ?;", (target_season,))
         cur.executemany(
             """
-            INSERT INTO projected_team_pr_25_26 (
-                team_abbr, base_team_pr, coach_grade, playstyle, final_team_pr, rotation_players
+            INSERT INTO team_projection (
+                team_abbr, season, base_team_pr, coach_grade, playstyle,
+                final_team_pr, rotation_players
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             out_rows,
         )
@@ -245,6 +276,7 @@ def main() -> None:
             out_rows,
             columns=[
                 "team_abbr",
+                "season",
                 "base_team_pr",
                 "coach_grade",
                 "playstyle",
@@ -254,7 +286,7 @@ def main() -> None:
         ).sort_values("final_team_pr", ascending=False, kind="mergesort")
 
         top10 = rank_df.head(10)
-        print("\nTop 10 teams by final_team_pr (2025-26 projection)", flush=True)
+        print(f"\nTop 10 teams by final_team_pr ({target_season} projection)", flush=True)
         print(
             f"  {'#':>2}  {'Team':<5}  {'final_team_pr':>12}  {'base_team_pr':>12}  "
             f"{'coach_grade':>11}  {'playstyle':<22}  rotation_players",
@@ -270,7 +302,11 @@ def main() -> None:
                 f"{row['base_team_pr']:12.2f}  {str(cg):>11}  {str(ps):<22}  {rot_short}",
                 flush=True,
             )
-        print(f"\n[build_projected_team_pr_25_26] Wrote {len(out_rows)} team row(s).", flush=True)
+        print(
+            f"\n[build_projected_team_pr_25_26] Wrote {len(out_rows)} team row(s) "
+            f"for season {target_season!r}.",
+            flush=True,
+        )
     finally:
         con.close()
 

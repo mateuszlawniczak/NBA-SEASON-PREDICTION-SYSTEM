@@ -1,8 +1,8 @@
 """
 calculate_final_simulation_pr.py
 ---------------------------------
-Reads ``player_experience_pr`` (2024-25 adjusted experience PR) and yearly
-``player_special_effects`` for season ``2024-25``, applies stacking boosts,
+Reads ``player_experience_pr`` (source-season adjusted experience PR) and yearly
+``player_special_effects`` for the source season, applies stacking boosts,
 and writes ``final_simulation_pr`` only (no other tables are altered).
 """
 
@@ -13,8 +13,9 @@ import sqlite3
 import sys
 from typing import Any
 
+from season_utils import SeasonPair, parse_cli_seasons
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
-TARGET_SEASON = "2024-25"
 
 # (column_name, boost_if_yes, label_for_applied_effects)
 EFFECT_RULES: tuple[tuple[str, int, str], ...] = (
@@ -30,9 +31,11 @@ EFFECT_RULES: tuple[tuple[str, int, str], ...] = (
 
 CREATE_FINAL_SIMULATION_PR = """
 CREATE TABLE IF NOT EXISTS final_simulation_pr (
-    player_name TEXT PRIMARY KEY,
-    final_pr INTEGER NOT NULL,
-    applied_effects TEXT NOT NULL
+    player_name     TEXT NOT NULL,
+    season          TEXT NOT NULL,
+    final_pr        INTEGER NOT NULL,
+    applied_effects TEXT NOT NULL,
+    PRIMARY KEY (player_name, season)
 );
 """
 
@@ -45,7 +48,13 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8")
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-def main() -> None:
+def main(source_season: str | None = None, target_season: str | None = None) -> None:
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
+    _ = target_season
+
     cols_sql = ", ".join(col for col, _, _ in EFFECT_RULES)
     query = f"""
         SELECT
@@ -55,6 +64,7 @@ def main() -> None:
         FROM player_experience_pr AS e
         LEFT JOIN player_special_effects AS s
           ON e.player_name = s.player_name AND s.season = ?
+        WHERE e.season = ?
         ORDER BY e.player_name;
     """
 
@@ -62,13 +72,15 @@ def main() -> None:
     try:
         cur = con.cursor()
         cur.execute(CREATE_FINAL_SIMULATION_PR)
-        cur.execute("DELETE FROM final_simulation_pr;")
+        cur.execute(
+            "DELETE FROM final_simulation_pr WHERE season = ?;",
+            (source_season,),
+        )
 
-        cur.execute(query, (TARGET_SEASON,))
+        cur.execute(query, (source_season, source_season))
         rows_raw = cur.fetchall()
 
-        out: list[tuple[str, int, str]] = []
-        # SELECT columns: player_name, adjusted_exp_pr, then each effect in EFFECT_RULES order
+        out: list[tuple[str, str, int, str]] = []
         for tup in rows_raw:
             pname = str(tup[0]).strip()
             base = int(tup[1])
@@ -80,19 +92,19 @@ def main() -> None:
                     bonus += pts
                     applied.append(label)
             effects_str = ", ".join(applied) if applied else "None"
-            out.append((pname, base + bonus, effects_str))
+            out.append((pname, source_season, base + bonus, effects_str))
 
         cur.executemany(
             """
-            INSERT INTO final_simulation_pr (player_name, final_pr, applied_effects)
-            VALUES (?, ?, ?);
+            INSERT INTO final_simulation_pr (player_name, season, final_pr, applied_effects)
+            VALUES (?, ?, ?, ?);
             """,
             out,
         )
         con.commit()
         print(
             f"[ok] final_simulation_pr: wrote {len(out)} rows "
-            f"(base from player_experience_pr, effects from {TARGET_SEASON}).",
+            f"(base from player_experience_pr, effects from {source_season}).",
             flush=True,
         )
     finally:

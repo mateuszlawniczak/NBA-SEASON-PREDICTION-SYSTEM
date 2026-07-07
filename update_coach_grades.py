@@ -29,6 +29,9 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8")
 from nba_api.stats.endpoints import CommonTeamRoster, LeagueGameFinder
 from nba_api.stats.static import teams as nba_teams
 
+from leakage_guards import target_start_year
+from season_utils import SeasonPair, parse_cli_seasons
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
 CACHE_PATH = os.path.join(os.path.dirname(__file__), ".coach_grades_api_cache.json")
 CACHE_VERSION = 2
@@ -37,7 +40,7 @@ TIMEOUT = 60
 ROSTER_SNOOZE = (0.45, 0.95)
 PLAYOFF_SNOOZE = (0.25, 0.55)
 
-CURRENT_START_YEAR = 2025  # 2025-26 included in “current” windows
+CURRENT_START_YEAR = 2025  # legacy default; overridden by --season when provided
 CAREER_FIRST_START_YEAR = 2000
 
 
@@ -179,7 +182,7 @@ def _coach_cell_matches(cell: str, key: str) -> bool:
     return key in parts
 
 
-def _load_cache() -> dict[str, Any] | None:
+def _load_cache(current_start_year: int) -> dict[str, Any] | None:
     if not os.path.isfile(CACHE_PATH):
         return None
     try:
@@ -189,17 +192,22 @@ def _load_cache() -> dict[str, Any] | None:
         return None
     if data.get("version") != CACHE_VERSION:
         return None
-    if data.get("current_start_year") != CURRENT_START_YEAR:
+    if data.get("current_start_year") != current_start_year:
         return None
     if data.get("career_first") != CAREER_FIRST_START_YEAR:
         return None
     return data
 
 
-def _save_cache(roster: dict[str, dict[int, str]], playoff: dict[str, dict[int, dict]]) -> None:
+def _save_cache(
+    roster: dict[str, dict[int, str]],
+    playoff: dict[str, dict[int, dict]],
+    *,
+    current_start_year: int,
+) -> None:
     payload = {
         "version": CACHE_VERSION,
-        "current_start_year": CURRENT_START_YEAR,
+        "current_start_year": current_start_year,
         "career_first": CAREER_FIRST_START_YEAR,
         "roster_by_season": {
             s: {str(k): v for k, v in m.items()} for s, m in roster.items()
@@ -225,8 +233,10 @@ def _cache_to_runtime(data: dict[str, Any]) -> tuple[dict[str, dict[int, str]], 
 
 def build_or_load_indexes(
     career_seasons: list[str],
+    *,
+    current_start_year: int,
 ) -> tuple[dict[str, dict[int, str]], dict[str, dict[int, dict[str, Any]]]]:
-    cached = _load_cache()
+    cached = _load_cache(current_start_year)
     if cached is not None:
         print("[cache] Using on-disk coach API index.", flush=True)
         return _cache_to_runtime(cached)
@@ -254,7 +264,7 @@ def build_or_load_indexes(
                 roster_by_season[season][tid] = nm
             _snooze(ROSTER_SNOOZE)
 
-    _save_cache(roster_by_season, playoff_by_season)
+    _save_cache(roster_by_season, playoff_by_season, current_start_year=current_start_year)
     return roster_by_season, playoff_by_season
 
 
@@ -350,13 +360,20 @@ def print_grade_table(rows: list[tuple[str, str]]) -> None:
     print(sep)
 
 
-def main() -> None:
-    last_5_sy = CURRENT_START_YEAR - 4
+def main(source_season: str | None = None, target_season: str | None = None) -> None:
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
+    _ = source_season
+
+    current_start_year = target_start_year(target_season)
+    last_5_sy = current_start_year - 4
     career_first_sy = CAREER_FIRST_START_YEAR
-    last_5 = set(_seasons_inclusive(last_5_sy, CURRENT_START_YEAR))
-    last_10 = set(_seasons_inclusive(CURRENT_START_YEAR - 9, CURRENT_START_YEAR))
-    last_15 = set(_seasons_inclusive(CURRENT_START_YEAR - 14, CURRENT_START_YEAR))
-    career_seasons = _seasons_inclusive(career_first_sy, CURRENT_START_YEAR)
+    last_5 = set(_seasons_inclusive(last_5_sy, current_start_year))
+    last_10 = set(_seasons_inclusive(current_start_year - 9, current_start_year))
+    last_15 = set(_seasons_inclusive(current_start_year - 14, current_start_year))
+    career_seasons = _seasons_inclusive(career_first_sy, current_start_year)
 
     con = sqlite3.connect(DB_PATH)
     migrate_coach_system_schema(con)
@@ -367,7 +384,9 @@ def main() -> None:
         con.close()
         return
 
-    roster_by_season, playoff_by_season = build_or_load_indexes(career_seasons)
+    roster_by_season, playoff_by_season = build_or_load_indexes(
+        career_seasons, current_start_year=current_start_year
+    )
 
     updates: list[tuple[str, str]] = []
     table_rows: list[tuple[str, str]] = []

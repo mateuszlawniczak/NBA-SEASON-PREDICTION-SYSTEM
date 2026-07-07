@@ -2,16 +2,16 @@
 Monte Carlo simulator for the 2025–26 NBA season (Specification run_monte_carlo).
 
 Reads roster and ratings from nba_data.db, runs repeated full-season + playoff
-simulations, writes simulation_results_25_26, and prints validation output.
+simulations, writes simulation_results (season-keyed), and prints validation output.
 
 RS multipliers:
-  coach_mult and playstyle_mult are derived from projected_team_pr_25_26
+  coach_mult and playstyle_mult are derived from team_projection
   (coach_grade -> multiplier map; playstyle -> playstyle_multipliers lookup).
-  continuity_mult is read from projected_team_pr_25_26 when that column exists;
-  otherwise it falls back to team_playoff_pr_25_26.continuity_mult (schema in repo).
+  continuity_mult is read from team_projection when that column exists;
+  otherwise it falls back to team_playoff_projection.continuity_mult (schema in repo).
 
 PO multipliers: amplified_coach_mult, playstyle_mult, continuity_mult from
-team_playoff_pr_25_26.
+team_playoff_projection.
 """
 
 from __future__ import annotations
@@ -24,7 +24,10 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from season_utils import SeasonPair, parse_cli_seasons
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
+DEFAULT_RUN_ID = "production"
 N_SIMULATIONS = 1000
 RS_GAMES_PER_TEAM = 82
 N_TEAMS = 30
@@ -540,29 +543,40 @@ def conference_playoff_bracket(
 
 
 def _projected_column_names(con: sqlite3.Connection) -> set[str]:
-    rows = con.execute("PRAGMA table_info(projected_team_pr_25_26)").fetchall()
+    rows = con.execute("PRAGMA table_info(team_projection)").fetchall()
     return {str(r[1]) for r in rows}
 
 
-def load_profiles(con: sqlite3.Connection) -> tuple[list[TeamProfile], list[str]]:
+def load_profiles(
+    con: sqlite3.Connection, target_season: str
+) -> tuple[list[TeamProfile], list[str]]:
     ultimate = pd.read_sql_query(
-        "SELECT player_name, pr, mapped_position FROM ULTIMATE_PR",
+        "SELECT player_name, pr, mapped_position FROM ULTIMATE_PR WHERE season = ?",
         con,
+        params=(target_season,),
     )
     playoff = pd.read_sql_query(
-        "SELECT player_name, playoff_pr FROM ultimate_playoff_pr",
+        "SELECT player_name, playoff_pr FROM ultimate_playoff_pr WHERE season = ?",
         con,
+        params=(target_season,),
     )
     dur = pd.read_sql_query(
-        "SELECT player_name, rs_durability, po_durability FROM player_durability_profiles",
+        """
+        SELECT player_name, rs_durability, po_durability
+        FROM player_durability_profiles
+        WHERE season = ?
+        """,
         con,
+        params=(target_season,),
     )
     teams = pd.read_sql_query(
         """
-        SELECT player_name, team_abbr FROM player_starting_teams_25_26
-        WHERE team_abbr IS NOT NULL AND TRIM(team_abbr) != ''
+        SELECT player_name, team_abbr FROM player_starting_teams
+        WHERE season = ?
+          AND team_abbr IS NOT NULL AND TRIM(team_abbr) != ''
         """,
         con,
+        params=(target_season,),
     )
 
     proj_cols = _projected_column_names(con)
@@ -574,8 +588,8 @@ def load_profiles(con: sqlite3.Connection) -> tuple[list[TeamProfile], list[str]
             proj_sql += ", continuity_mult\n"
         else:
             proj_sql += ", NULL AS continuity_mult\n"
-        proj_sql += "FROM projected_team_pr_25_26"
-        projected = pd.read_sql_query(proj_sql, con)
+        proj_sql += "FROM team_projection WHERE season = ?"
+        projected = pd.read_sql_query(proj_sql, con, params=(target_season,))
     else:
         extra_cont = ""
         if "continuity_mult" in proj_cols:
@@ -583,17 +597,21 @@ def load_profiles(con: sqlite3.Connection) -> tuple[list[TeamProfile], list[str]
         projected = pd.read_sql_query(
             f"""
             SELECT team_abbr, coach_grade, playstyle{extra_cont}
-            FROM projected_team_pr_25_26
+            FROM team_projection
+            WHERE season = ?
             """,
             con,
+            params=(target_season,),
         )
 
     po_team = pd.read_sql_query(
         """
         SELECT team, amplified_coach_mult, playstyle_mult, continuity_mult
-        FROM team_playoff_pr_25_26
+        FROM team_playoff_projection
+        WHERE season = ?
         """,
         con,
+        params=(target_season,),
     )
     ps_mult_df = pd.read_sql_query(
         "SELECT playstyle, multiplier FROM playstyle_multipliers",
@@ -777,6 +795,8 @@ def write_results_table(
     win_sum: np.ndarray,
     seed_counts: np.ndarray,
     exit_counts: np.ndarray,
+    target_season: str,
+    run_id: str = DEFAULT_RUN_ID,
 ) -> None:
     n = N_SIMULATIONS
     rows = []
@@ -789,6 +809,8 @@ def write_results_table(
         ch = int(exit_counts[i, 5])
         row = [
             ab,
+            target_season,
+            run_id,
             round(float(win_sum[i]) / n, 2),
         ]
         for s in range(15):
@@ -806,12 +828,13 @@ def write_results_table(
         rows.append(tuple(row))
 
     cur = con.cursor()
-    cur.execute("DROP TABLE IF EXISTS simulation_results_25_26")
     cols_seed = ", ".join([f"seed_{k}_pct REAL NOT NULL" for k in range(1, 16)])
     cur.execute(
         f"""
-        CREATE TABLE simulation_results_25_26 (
-            team TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS simulation_results (
+            team TEXT NOT NULL,
+            season TEXT NOT NULL,
+            run_id TEXT NOT NULL DEFAULT 'production',
             avg_wins REAL NOT NULL,
             {cols_seed},
             missed_playoffs_pct REAL NOT NULL,
@@ -819,25 +842,40 @@ def write_results_table(
             second_round_pct REAL NOT NULL,
             conf_finals_pct REAL NOT NULL,
             finals_pct REAL NOT NULL,
-            champion_pct REAL NOT NULL
+            champion_pct REAL NOT NULL,
+            PRIMARY KEY (team, season, run_id)
         )
         """
     )
-    qmarks = ",".join(["?"] * (2 + 15 + 6))
+    cur.execute(
+        "DELETE FROM simulation_results WHERE season = ? AND run_id = ?",
+        (target_season, run_id),
+    )
+    qmarks = ",".join(["?"] * (4 + 15 + 6))
     cur.executemany(
-        f"INSERT INTO simulation_results_25_26 VALUES ({qmarks})",
+        f"INSERT INTO simulation_results VALUES ({qmarks})",
         rows,
     )
     con.commit()
 
 
-def main() -> None:
+def main(
+    source_season: str | None = None,
+    target_season: str | None = None,
+    run_id: str = DEFAULT_RUN_ID,
+) -> None:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
+    _ = source_season  # reserved for future source-season MC inputs
+
     con = sqlite3.connect(DB_PATH)
     try:
-        profiles, abbrs = load_profiles(con)
+        profiles, abbrs = load_profiles(con, target_season)
     finally:
         con.close()
 
@@ -862,19 +900,28 @@ def main() -> None:
 
     con = sqlite3.connect(DB_PATH)
     try:
-        write_results_table(con, abbrs, win_sum, seed_counts, exit_counts)
+        write_results_table(
+            con, abbrs, win_sum, seed_counts, exit_counts, target_season, run_id
+        )
     finally:
         con.close()
 
     with sqlite3.connect(DB_PATH) as c2:
         df = pd.read_sql_query(
-            "SELECT team, champion_pct FROM simulation_results_25_26 "
-            "ORDER BY champion_pct DESC LIMIT 10",
+            """
+            SELECT team, champion_pct FROM simulation_results
+            WHERE season = ? AND run_id = ?
+            ORDER BY champion_pct DESC LIMIT 10
+            """,
             c2,
+            params=(target_season, run_id),
         )
     print("\n=== Top 10 championship favorites (champion_pct) ===")
     print(df.to_string(index=False))
-    print(f"\nWrote simulation_results_25_26 ({N_SIMULATIONS} simulations).")
+    print(
+        f"\nWrote simulation_results ({N_SIMULATIONS} simulations, "
+        f"season={target_season!r}, run_id={run_id!r})."
+    )
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ from typing import Any
 
 import pandas as pd
 
+from season_utils import SeasonPair, parse_cli_seasons, prior_source_season
+
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -99,8 +101,8 @@ def experience_tier(experience: str | None) -> str:
 
 def compute_rs_durability(
     experience: str | None,
-    gp_2324: int,
-    gp_2425: int,
+    gp_prior: int,
+    gp_source: int,
     missing_both_seasons: bool,
 ) -> float:
     tier = experience_tier(experience)
@@ -111,39 +113,54 @@ def compute_rs_durability(
     if tier == "rookie":
         return clamp_rs(0.70)
     if tier == "sophomore":
-        # Only 2024-25 regular-season games count; never a 164-game denominator.
-        return clamp_rs(gp_2425 / 82.0)
-    total = gp_2324 + gp_2425
-    if gp_2324 > 0 and gp_2425 > 0:
+        # Second-year players: use source-season GP only (relative to target).
+        return clamp_rs(gp_source / 82.0)
+    total = gp_prior + gp_source
+    if gp_prior > 0 and gp_source > 0:
         return clamp_rs(total / 164.0)
-    if gp_2324 > 0 or gp_2425 > 0:
+    if gp_prior > 0 or gp_source > 0:
         # One season of GP (injury, overseas, missed year, etc.): full-season scale.
         return clamp_rs(total / 82.0)
     return clamp_rs(0.0)
 
 
-def main() -> None:
+def main(source_season: str | None = None, target_season: str | None = None) -> None:
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
+
+    prior_source = prior_source_season(source_season)
+    season_pair = (prior_source, source_season)
+
     con = sqlite3.connect(DB_PATH)
     try:
         players = pd.read_sql_query(
-            "SELECT player_name, experience_level FROM ultimate_playoff_pr;",
+            """
+            SELECT player_name, experience_level
+            FROM ultimate_playoff_pr
+            WHERE season = ?;
+            """,
             con,
+            params=(target_season,),
         )
         basic = pd.read_sql_query(
             """
             SELECT season, player_id, player_name, team_id, team_abbr, gp, total_minutes
             FROM player_stats_basic
-            WHERE season IN ('2023-24', '2024-25');
+            WHERE season IN (?, ?);
             """,
             con,
+            params=season_pair,
         )
         po = pd.read_sql_query(
             """
             SELECT season, player_id, player_name, team_id, team_abbr, gp, total_minutes
             FROM player_stats_basic_playoffs
-            WHERE season IN ('2023-24', '2024-25');
+            WHERE season IN (?, ?);
             """,
             con,
+            params=season_pair,
         )
     finally:
         con.close()
@@ -171,15 +188,15 @@ def main() -> None:
     names = players["player_name"].astype(str)
     rs_rows = []
     for pname in names:
-        g24 = rs_gps.get((pname, "2023-24"), 0)
-        g25 = rs_gps.get((pname, "2024-25"), 0)
-        miss = (pname, "2023-24") not in rs_gps and (pname, "2024-25") not in rs_gps
+        g_prior = rs_gps.get((pname, prior_source), 0)
+        g_source = rs_gps.get((pname, source_season), 0)
+        miss = (pname, prior_source) not in rs_gps and (pname, source_season) not in rs_gps
         exp = players.loc[players["player_name"] == pname, "experience_level"].iloc[0]
         rs_rows.append(
             {
                 "player_name": pname,
                 "experience_level": exp,
-                "rs_durability": compute_rs_durability(exp, g24, g25, miss),
+                "rs_durability": compute_rs_durability(exp, g_prior, g_source, miss),
             }
         )
     rs_df = pd.DataFrame(rs_rows)
@@ -212,18 +229,24 @@ def main() -> None:
 
     out = rs_df.copy()
     out["po_durability"] = out["player_name"].map(po_score)
+    out.insert(0, "season", target_season)
 
     con = sqlite3.connect(DB_PATH)
     try:
-        con.execute("DROP TABLE IF EXISTS player_durability_profiles;")
         con.execute(
             """
-            CREATE TABLE player_durability_profiles (
-                player_name   TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS player_durability_profiles (
+                season        TEXT NOT NULL,
+                player_name   TEXT NOT NULL,
                 rs_durability REAL NOT NULL,
-                po_durability REAL NOT NULL
+                po_durability REAL NOT NULL,
+                PRIMARY KEY (player_name, season)
             );
             """
+        )
+        con.execute(
+            "DELETE FROM player_durability_profiles WHERE season = ?;",
+            (target_season,),
         )
         out.to_sql("player_durability_profiles", con, index=False, if_exists="append")
         con.commit()
@@ -237,32 +260,39 @@ def main() -> None:
         print(f"{verify_name!r}: not found in player_durability_profiles.")
     else:
         r = castle.iloc[0]
-        g25 = rs_gps.get((verify_name, "2024-25"), 0)
-        g24 = rs_gps.get((verify_name, "2023-24"), 0)
+        g_source = rs_gps.get((verify_name, source_season), 0)
+        g_prior = rs_gps.get((verify_name, prior_source), 0)
         tier = experience_tier(
             players.loc[players["player_name"] == verify_name, "experience_level"].iloc[0]
         )
-        print(f"{verify_name}: tier={tier}  GP(23-24)={g24}  GP(24-25)={g25}")
+        print(
+            f"{verify_name}: tier={tier}  GP({prior_source})={g_prior}  "
+            f"GP({source_season})={g_source}"
+        )
         print(f"  rs_durability={r['rs_durability']:.4f}   po_durability={r['po_durability']:.4f}")
-        print(f"  check: clamp(GP_2024_25 / 82) = {clamp_rs(g25 / 82.0):.4f}")
+        print(f"  check: clamp(GP_{source_season} / 82) = {clamp_rs(g_source / 82.0):.4f}")
 
     merged = players.merge(out, on="player_name", how="inner")
     soph = merged[
         merged["experience_level"].astype(str).str.strip().str.casefold() == "sophomore"
     ].copy()
-    soph["gp_2024_25"] = soph["player_name"].map(lambda n: rs_gps.get((str(n), "2024-25"), 0))
+    soph["gp_source"] = soph["player_name"].map(
+        lambda n: rs_gps.get((str(n), source_season), 0)
+    )
     soph = soph.sort_values(["rs_durability", "player_name"], ascending=[False, True]).head(5)
 
-    print("\nTop 5 Sophomores (rs_durability; all use GP_2024_25 / 82 only):")
+    print(
+        f"\nTop 5 Sophomores (rs_durability; source season {source_season!r} GP / 82 only):"
+    )
     if soph.empty:
         print("  (none: no players with experience_level = Sophomore in ultimate_playoff_pr.)")
     else:
         for _, r in soph.iterrows():
-            gp25 = int(r["gp_2024_25"])
-            expect = clamp_rs(gp25 / 82.0)
+            gp_s = int(r["gp_source"])
+            expect = clamp_rs(gp_s / 82.0)
             match = abs(float(r["rs_durability"]) - expect) < 1e-6
             print(
-                f"  {r['player_name']:<26} GP_24-25={gp25:>3}  gp/82={gp25/82:.4f}  "
+                f"  {r['player_name']:<26} GP={gp_s:>3}  gp/82={gp_s/82:.4f}  "
                 f"rs={r['rs_durability']:.4f}  matches_gp_over_82={match}"
             )
 

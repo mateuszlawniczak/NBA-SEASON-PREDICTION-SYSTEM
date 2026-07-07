@@ -4,16 +4,16 @@ build_team_playoff_pr_25_26.py
 8-man playoff rotation using ``ultimate_playoff_pr.playoff_pr`` and positional
 draft rules, then coach / playstyle / continuity multipliers.
 
-Writes ONLY ``team_playoff_pr_25_26`` in ``nba_data.db`` (replaced each run).
+Writes ONLY ``team_playoff_projection`` in ``nba_data.db`` (idempotent per season).
 
 Reads:
-  ultimate_playoff_pr, player_starting_teams_25_26, coach_system_data,
+  ultimate_playoff_pr, player_starting_teams, coach_system_data,
   playstyle_multipliers,
 
 plus (required to attach coaches and playstyles to teams — not present in the
 four named tables alone):
 
-  team_coaches_25_26, team_playstyle_data (season ``2024-25``).
+  team_coaches, team_playstyle_data (source season).
 """
 
 from __future__ import annotations
@@ -21,10 +21,15 @@ from __future__ import annotations
 import os
 import sqlite3
 import sys
+from typing import Literal
 
 import pandas as pd
 
+from season_utils import SeasonPair, parse_cli_seasons
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
+
+Top2Status = Literal["kept", "assumed_kept", "departed"]
 
 GRADE_TO_COACH_MULT: dict[str, float] = {
     "S": 1.08,
@@ -37,7 +42,6 @@ GRADE_TO_COACH_MULT: dict[str, float] = {
 
 DEFAULT_COACH_MULT = 1.00
 DEFAULT_PLAYSTYLE_MULT = 1.00
-PLAYSTYLE_SEASON = "2024-25"
 
 STAR_BOOST = 1.15
 COACH_AMPLIFY = 1.5
@@ -46,15 +50,268 @@ CONTINUITY_HIGH = 1.05
 CONTINUITY_LOW = 0.95
 CONTINUITY_DEFAULT = 1.00
 
-HIGH_CONTINUITY_TEAMS = frozenset({"BOS", "DEN", "OKC", "NYK", "MIN", "IND", "ORL", "SAC"})
-LOW_CONTINUITY_TEAMS = frozenset({"PHI", "DAL", "SAS", "CHI", "DET"})
+# Top-2 gate + target-season roster overlap (all target seasons).
+CONTINUITY_OVERLAP_HIGH = 0.70
+CONTINUITY_OVERLAP_DEFAULT_MIN = 0.50
+
+CONTINUITY_MULT = {
+    "high": CONTINUITY_HIGH,
+    "low": CONTINUITY_LOW,
+    "default": CONTINUITY_DEFAULT,
+}
+
+# Legacy 2025-26 hardcoded tiers (review / comparison only).
+LEGACY_HIGH_CONTINUITY_TEAMS = frozenset(
+    {"BOS", "DEN", "OKC", "NYK", "MIN", "IND", "ORL", "SAC"}
+)
+LEGACY_LOW_CONTINUITY_TEAMS = frozenset({"PHI", "DAL", "SAS", "CHI", "DET"})
+
+
+def _legacy_continuity_tier(team_abbr: str) -> str:
+    if team_abbr in LEGACY_HIGH_CONTINUITY_TEAMS:
+        return "high"
+    if team_abbr in LEGACY_LOW_CONTINUITY_TEAMS:
+        return "low"
+    return "default"
+
+
+def _roster_player_ids(
+    con: sqlite3.Connection,
+    season: str,
+    team_abbr: str,
+) -> dict[int, str]:
+    rows = con.execute(
+        """
+        SELECT player_id, player_name
+        FROM player_starting_teams
+        WHERE season = ? AND team_abbr = ?
+        """,
+        (season, team_abbr),
+    ).fetchall()
+    return {int(r[0]): str(r[1]) for r in rows}
+
+
+def _source_top_two(
+    con: sqlite3.Connection,
+    team_abbr: str,
+    source_season: str,
+) -> list[tuple[int, str, float]]:
+    """Top-2 players by prior-season PR on ``team_abbr``."""
+    rows = con.execute(
+        """
+        SELECT pst.player_id, pst.player_name,
+               COALESCE(up.pr, psp.base_pr, 0.0) AS pr
+        FROM player_starting_teams AS pst
+        LEFT JOIN ULTIMATE_PR AS up
+          ON up.player_name = pst.player_name
+         AND up.season = ?
+        LEFT JOIN player_simulation_pr AS psp
+          ON psp.player_name = pst.player_name
+         AND psp.season = ?
+        WHERE pst.season = ?
+          AND pst.team_abbr = ?
+        ORDER BY pr DESC, pst.player_name ASC
+        LIMIT 2
+        """,
+        (source_season, source_season, source_season, team_abbr),
+    ).fetchall()
+    return [(int(r[0]), str(r[1]), float(r[2])) for r in rows]
+
+
+def _target_team_for_player(
+    con: sqlite3.Connection,
+    player_id: int,
+    target_season: str,
+) -> str | None:
+    row = con.execute(
+        """
+        SELECT team_abbr
+        FROM player_starting_teams
+        WHERE season = ? AND player_id = ?
+        LIMIT 1
+        """,
+        (target_season, player_id),
+    ).fetchone()
+    return str(row[0]) if row else None
+
+
+def _top2_target_status(
+    con: sqlite3.Connection,
+    player_id: int,
+    team_abbr: str,
+    target_season: str,
+) -> Top2Status:
+    """
+    kept         — same team in target ``player_starting_teams``
+    assumed_kept — absent from target roster (not on any team); gate treats as kept
+    departed     — on a different team in target roster table → triggers LOW gate
+    """
+    target_team = _target_team_for_player(con, player_id, target_season)
+    if target_team is None:
+        return "assumed_kept"
+    if target_team == team_abbr:
+        return "kept"
+    return "departed"
+
+
+def _unknown_player_reason(
+    con: sqlite3.Connection,
+    player_id: int,
+    player_name: str,
+    target_season: str,
+) -> str:
+    """Explain why a top-2 player is missing from the target roster table."""
+    stats_row = con.execute(
+        """
+        SELECT team_abbr, gp
+        FROM player_stats_basic
+        WHERE season = ?
+          AND (player_id = ? OR player_name = ?)
+        ORDER BY gp DESC
+        LIMIT 1
+        """,
+        (target_season, player_id, player_name),
+    ).fetchone()
+    if stats_row:
+        team, gp = stats_row
+        return (
+            f"roster-table gap: {gp} GP for {team} in player_stats_basic "
+            f"but no player_starting_teams row"
+        )
+
+    pst_any = con.execute(
+        """
+        SELECT 1
+        FROM player_starting_teams
+        WHERE season = ? AND (player_id = ? OR player_name = ?)
+        LIMIT 1
+        """,
+        (target_season, player_id, player_name),
+    ).fetchone()
+    if pst_any:
+        return "partial roster-table gap (player_id/name mismatch across tables)"
+
+    return "not in player_stats_basic or player_starting_teams for target season"
+
+
+def _target_roster_overlap_ratio(
+    con: sqlite3.Connection,
+    team_abbr: str,
+    source_season: str,
+    target_season: str,
+) -> float:
+    """(players on team in BOTH seasons) / (players on team in target season)."""
+    source_ids = set(_roster_player_ids(con, source_season, team_abbr))
+    target_ids = set(_roster_player_ids(con, target_season, team_abbr))
+    if not target_ids:
+        return 0.0
+    return len(source_ids & target_ids) / len(target_ids)
+
+
+def _tier_from_overlap(overlap: float) -> str:
+    if overlap >= CONTINUITY_OVERLAP_HIGH:
+        return "high"
+    if overlap >= CONTINUITY_OVERLAP_DEFAULT_MIN:
+        return "default"
+    return "low"
+
+
+def _evaluate_neutral_handling(
+    con: sqlite3.Connection,
+    team_abbr: str,
+    target_season: str,
+    source_season: str,
+) -> str:
+    """
+    Previous rule: missing target-roster rows were neutral (gate ignored them).
+    Only explicit departures triggered LOW; otherwise overlap decided tier.
+    """
+    top_two = _source_top_two(con, team_abbr, source_season)
+    has_departed = False
+    for pid, _name, _pr in top_two:
+        target_team = _target_team_for_player(con, pid, target_season)
+        if target_team is not None and target_team != team_abbr:
+            has_departed = True
+            break
+    overlap = _target_roster_overlap_ratio(con, team_abbr, source_season, target_season)
+    if has_departed:
+        return "low"
+    return _tier_from_overlap(overlap)
+
+
+def evaluate_continuity(
+    con: sqlite3.Connection,
+    team_abbr: str,
+    target_season: str,
+    source_season: str,
+) -> dict[str, object]:
+    """
+    Apply top-2 gate then target-season overlap rule.
+
+    Top-2 gate fires only when a source top-2 player appears on a *different*
+    team in the target roster. Players absent from the target roster are
+    treated as kept (not penalized); flag them for manual review.
+    """
+    top_two = _source_top_two(con, team_abbr, source_season)
+    top_two_detail: list[tuple[int, str, float, Top2Status]] = []
+    assumed_kept_players: list[dict[str, object]] = []
+
+    for pid, name, pr in top_two:
+        status = _top2_target_status(con, pid, team_abbr, target_season)
+        top_two_detail.append((pid, name, pr, status))
+        if status == "assumed_kept":
+            assumed_kept_players.append(
+                {
+                    "player_id": pid,
+                    "player_name": name,
+                    "source_pr": pr,
+                    "source_team": team_abbr,
+                    "reason": _unknown_player_reason(con, pid, name, target_season),
+                }
+            )
+
+    overlap = _target_roster_overlap_ratio(con, team_abbr, source_season, target_season)
+    has_departed = any(s == "departed" for *_, s in top_two_detail)
+
+    if has_departed:
+        return {
+            "tier": "low",
+            "mult": CONTINUITY_LOW,
+            "overlap": overlap,
+            "top_two": top_two_detail,
+            "assumed_kept_players": assumed_kept_players,
+            "rule": "top2_gate",
+            "flagged_assumed_kept": bool(assumed_kept_players),
+        }
+
+    tier = _tier_from_overlap(overlap)
+    return {
+        "tier": tier,
+        "mult": CONTINUITY_MULT[tier],
+        "overlap": overlap,
+        "top_two": top_two_detail,
+        "assumed_kept_players": assumed_kept_players,
+        "rule": "overlap",
+        "flagged_assumed_kept": bool(assumed_kept_players),
+    }
+
+
+def _continuity_mult(
+    con: sqlite3.Connection,
+    team_abbr: str,
+    target_season: str,
+    source_season: str,
+) -> float:
+    return float(
+        evaluate_continuity(con, team_abbr, target_season, source_season)["mult"]
+    )
 
 REQUIRED_TABLES = (
     "ultimate_playoff_pr",
-    "player_starting_teams_25_26",
+    "player_starting_teams",
     "coach_system_data",
     "playstyle_multipliers",
-    "team_coaches_25_26",
+    "team_coaches",
     "team_playstyle_data",
 )
 
@@ -83,15 +340,6 @@ def _coach_mult_from_grade(g: object | None) -> float:
     if letter is None:
         return DEFAULT_COACH_MULT
     return GRADE_TO_COACH_MULT[letter]
-
-
-def _continuity_mult(team_abbr: str) -> float:
-    t = str(team_abbr).strip().upper()
-    if t in HIGH_CONTINUITY_TEAMS:
-        return CONTINUITY_HIGH
-    if t in LOW_CONTINUITY_TEAMS:
-        return CONTINUITY_LOW
-    return CONTINUITY_DEFAULT
 
 
 def _draft_eight_playoff_pr(roster: pd.DataFrame) -> float:
@@ -171,9 +419,19 @@ def _draft_eight_playoff_pr(roster: pd.DataFrame) -> float:
     return float(sum(pr_values))
 
 
-def main() -> None:
+def main(
+    source_season: str | None = None,
+    target_season: str | None = None,
+    *,
+    persist: bool = True,
+) -> None:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
 
     con = sqlite3.connect(DB_PATH)
     try:
@@ -191,16 +449,20 @@ def main() -> None:
             """
             SELECT player_name, mapped_position, playoff_pr
             FROM ultimate_playoff_pr
+            WHERE season = ?
             """,
             con,
+            params=(target_season,),
         )
         teams_players = pd.read_sql_query(
             """
             SELECT player_name, team_abbr
-            FROM player_starting_teams_25_26
-            WHERE team_abbr IS NOT NULL AND TRIM(team_abbr) != ''
+            FROM player_starting_teams
+            WHERE season = ?
+              AND team_abbr IS NOT NULL AND TRIM(team_abbr) != ''
             """,
             con,
+            params=(target_season,),
         )
 
         coach_grades = pd.read_sql_query(
@@ -208,11 +470,13 @@ def main() -> None:
             SELECT
                 tc.team_abbr,
                 COALESCE(NULLIF(TRIM(cs.Grade), ''), NULLIF(TRIM(tc.grade), '')) AS coach_grade
-            FROM team_coaches_25_26 AS tc
+            FROM team_coaches AS tc
             LEFT JOIN coach_system_data AS cs
               ON TRIM(tc.coach_name) = TRIM(cs.name)
+            WHERE tc.season = ?
             """,
             con,
+            params=(target_season,),
         )
         coach_mult_by_team = {
             str(r.team_abbr): _coach_mult_from_grade(r.coach_grade)
@@ -220,12 +484,13 @@ def main() -> None:
         }
 
         playstyles = pd.read_sql_query(
-            f"""
+            """
             SELECT team_abbr, playstyle
             FROM team_playstyle_data
-            WHERE season = '{PLAYSTYLE_SEASON}'
+            WHERE season = ?
             """,
             con,
+            params=(source_season,),
         )
         mult_df = pd.read_sql_query(
             "SELECT playstyle, multiplier FROM playstyle_multipliers",
@@ -238,7 +503,7 @@ def main() -> None:
         all_teams = sorted(coach_mult_by_team.keys())
         if len(all_teams) != 30:
             print(
-                f"[warning] Expected 30 teams from team_coaches_25_26, got {len(all_teams)}.",
+                f"[warning] Expected 30 teams from team_coaches, got {len(all_teams)}.",
                 flush=True,
             )
 
@@ -246,7 +511,7 @@ def main() -> None:
             "playstyle"
         ]
 
-        out_rows: list[tuple[str, float, float, float, float, float]] = []
+        out_rows: list[tuple[str, str, float, float, float, float, float]] = []
 
         for team in all_teams:
             g = merged[merged["team_abbr"].astype(str) == team]
@@ -261,15 +526,14 @@ def main() -> None:
             else:
                 ps_mult = float(mult_map.get(str(raw_ps), DEFAULT_PLAYSTYLE_MULT))
 
-            cont_mult = _continuity_mult(team)
+            cont_mult = _continuity_mult(con, team, target_season, source_season)
 
-            final_pr = (
-                base_8 * amp_coach * ps_mult * cont_mult
-            )
+            final_pr = base_8 * amp_coach * ps_mult * cont_mult
 
             out_rows.append(
                 (
                     team,
+                    target_season,
                     round(base_8, 2),
                     round(amp_coach, 2),
                     round(ps_mult, 2),
@@ -279,36 +543,43 @@ def main() -> None:
             )
 
         cur = con.cursor()
-        cur.execute("DROP TABLE IF EXISTS team_playoff_pr_25_26")
-        cur.execute(
-            """
-            CREATE TABLE team_playoff_pr_25_26 (
-                team                 TEXT PRIMARY KEY,
-                base_8man_pr         REAL NOT NULL,
-                amplified_coach_mult REAL NOT NULL,
-                playstyle_mult       REAL NOT NULL,
-                continuity_mult      REAL NOT NULL,
-                final_playoff_pr     REAL NOT NULL
+        if persist:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS team_playoff_projection (
+                    team                 TEXT NOT NULL,
+                    season               TEXT NOT NULL,
+                    base_8man_pr         REAL NOT NULL,
+                    amplified_coach_mult REAL NOT NULL,
+                    playstyle_mult       REAL NOT NULL,
+                    continuity_mult      REAL NOT NULL,
+                    final_playoff_pr     REAL NOT NULL,
+                    PRIMARY KEY (team, season)
+                )
+                """
             )
-            """
-        )
-        cur.executemany(
-            """
-            INSERT INTO team_playoff_pr_25_26 (
-                team,
-                base_8man_pr,
-                amplified_coach_mult,
-                playstyle_mult,
-                continuity_mult,
-                final_playoff_pr
+            cur.execute(
+                "DELETE FROM team_playoff_projection WHERE season = ?;",
+                (target_season,),
             )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            out_rows,
-        )
-        con.commit()
+            cur.executemany(
+                """
+                INSERT INTO team_playoff_projection (
+                    team,
+                    season,
+                    base_8man_pr,
+                    amplified_coach_mult,
+                    playstyle_mult,
+                    continuity_mult,
+                    final_playoff_pr
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                out_rows,
+            )
+            con.commit()
 
-        rank_lines = sorted(out_rows, key=lambda x: (-x[5], x[0]))
+        rank_lines = sorted(out_rows, key=lambda x: (-x[6], x[0]))
         print("\nAll teams by final_playoff_pr (descending)\n", flush=True)
         print(
             f"  {'team':<5}  {'final':>10}  {'base8':>10}  {'coach*':>8}  "
@@ -316,16 +587,24 @@ def main() -> None:
             flush=True,
         )
         for row in rank_lines:
-            team, b8, ac, ps, ct, fin = row
+            team, _season, b8, ac, ps, ct, fin = row
             print(
                 f"  {team:<5}  {fin:10.2f}  {b8:10.2f}  {ac:8.2f}  "
                 f"{ps:7.2f}  {ct:6.2f}",
                 flush=True,
             )
-        print(
-            f"\n[build_team_playoff_pr_25_26] Wrote {len(out_rows)} row(s) to team_playoff_pr_25_26.",
-            flush=True,
-        )
+        if persist:
+            print(
+                f"\n[build_team_playoff_pr_25_26] Wrote {len(out_rows)} row(s) to "
+                f"team_playoff_projection for season {target_season!r}.",
+                flush=True,
+            )
+        else:
+            print(
+                f"\n[build_team_playoff_pr_25_26] Computed {len(out_rows)} row(s) "
+                f"for season {target_season!r} (persist=False).",
+                flush=True,
+            )
     finally:
         con.close()
 

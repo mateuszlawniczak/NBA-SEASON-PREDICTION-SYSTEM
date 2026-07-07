@@ -15,9 +15,9 @@ import sqlite3
 import sys
 from typing import Any
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
+from season_utils import SeasonPair, parse_cli_seasons
 
-TARGET_SEASON = "2024-25"
+DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
 
 TOP_RISERS = 15
 TOP_FALLERS = 15
@@ -77,7 +77,7 @@ def ensure_projected_table(con: sqlite3.Connection) -> None:
     )
 
 
-def load_base_with_age(con: sqlite3.Connection) -> list[dict[str, Any]]:
+def load_base_with_age(con: sqlite3.Connection, source_season: str) -> list[dict[str, Any]]:
     """
     base_pr from player_simulation_pr; age from player_stats_basic for the
     highest-minute stint when a player has multiple team rows.
@@ -102,7 +102,7 @@ def load_base_with_age(con: sqlite3.Connection) -> list[dict[str, Any]]:
     prev = con.row_factory
     con.row_factory = sqlite3.Row
     try:
-        cur = con.execute(sql, (TARGET_SEASON,))
+        cur = con.execute(sql, (source_season,))
         return [dict(r) for r in cur.fetchall()]
     finally:
         con.row_factory = prev
@@ -131,14 +131,20 @@ def print_table(
     print(flush=True)
 
 
-def main() -> None:
+def main(source_season: str | None = None, target_season: str | None = None) -> None:
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
+    _ = target_season
+
     con = sqlite3.connect(DB_PATH)
     try:
         ensure_projected_table(con)
 
-        raw = load_base_with_age(con)
+        raw = load_base_with_age(con, source_season)
         if not raw:
-            print(f"No rows in player_simulation_pr for season {TARGET_SEASON}.", flush=True)
+            print(f"No rows in player_simulation_pr for season {source_season}.", flush=True)
             return
 
         missing_age = 0
@@ -164,7 +170,7 @@ def main() -> None:
             mult = aging_multiplier(age_i)
             projected = int(round(base * mult))
             delta = projected - base
-            out_rows.append((name_s, team, TARGET_SEASON, age_i, base, mult, projected, delta))
+            out_rows.append((name_s, team, source_season, age_i, base, mult, projected, delta))
 
         if not out_rows:
             print("No rows could be built (missing age on all players?).", flush=True)
@@ -172,7 +178,7 @@ def main() -> None:
 
         con.execute(
             "DELETE FROM player_projected_pr WHERE season = ?",
-            (TARGET_SEASON,),
+            (source_season,),
         )
         con.executemany(
             """
@@ -194,11 +200,11 @@ def main() -> None:
         fallers = sorted(out_rows, key=lambda x: (x[7], x[6], x[0]))[:TOP_FALLERS]
 
         print_table(
-            f"Top {TOP_RISERS} risers (projected_pr − base_pr), {TARGET_SEASON}",
+            f"Top {TOP_RISERS} risers (projected_pr − base_pr), {source_season}",
             [(r[0], r[3], r[4], r[5], r[6]) for r in risers],
         )
         print_table(
-            f"Top {TOP_FALLERS} fallers (projected_pr − base_pr), {TARGET_SEASON}",
+            f"Top {TOP_FALLERS} fallers (projected_pr − base_pr), {source_season}",
             [(r[0], r[3], r[4], r[5], r[6]) for r in fallers],
         )
     finally:

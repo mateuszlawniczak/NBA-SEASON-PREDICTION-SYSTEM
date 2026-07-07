@@ -27,9 +27,9 @@ import sqlite3
 import sys
 from typing import Any
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
+from season_utils import SeasonPair, parse_cli_seasons
 
-TARGET_SEASON = "2024-25"
+DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
 
 ERA_AVG_TS = 0.58
 MPG_REF = 30.0
@@ -94,7 +94,7 @@ def ensure_table(con: sqlite3.Connection) -> None:
         con.execute("ALTER TABLE player_simulation_pr ADD COLUMN team TEXT")
 
 
-def load_rows(con: sqlite3.Connection) -> list[dict[str, Any]]:
+def load_rows(con: sqlite3.Connection, source_season: str) -> list[dict[str, Any]]:
     sql = """
       SELECT
         b.player_name AS player_name,
@@ -122,7 +122,7 @@ def load_rows(con: sqlite3.Connection) -> list[dict[str, Any]]:
     prev = con.row_factory
     con.row_factory = sqlite3.Row
     try:
-        cur = con.execute(sql, (TARGET_SEASON,))
+        cur = con.execute(sql, (source_season,))
         return [dict(r) for r in cur.fetchall()]
     finally:
         con.row_factory = prev
@@ -171,7 +171,7 @@ def compute_row(row: dict[str, Any]) -> tuple[int, float, float] | None:
     return base_pr, mpg, raw_impact
 
 
-def print_top_audit(rows: list[tuple[str, str, float, float, int]]) -> None:
+def print_top_audit(rows: list[tuple[str, str, float, float, int]], source_season: str) -> None:
     """rows: (player, team, mpg, raw_impact, base_pr)."""
     col_w = (22, 5, 6, 11, 8)
     header = (
@@ -179,7 +179,7 @@ def print_top_audit(rows: list[tuple[str, str, float, float, int]]) -> None:
         f"{'MPG':>{col_w[2]}} | {'Raw Impact':>{col_w[3]}} | {'Base PR':>{col_w[4]}}"
     )
     print(
-        f"Top {TOP_N} by Base PR ({TARGET_SEASON}) — "
+        f"Top {TOP_N} by Base PR ({source_season}) — "
         f"raw_impact × (MPG/{MPG_REF:.0f})^{MPG_CURVE_EXP}",
         flush=True,
     )
@@ -194,7 +194,9 @@ def print_top_audit(rows: list[tuple[str, str, float, float, int]]) -> None:
     print(flush=True)
 
 
-def print_bench_elite_audit(rows: list[tuple[str, str, float, float, int]]) -> None:
+def print_bench_elite_audit(
+    rows: list[tuple[str, str, float, float, int]], source_season: str
+) -> None:
     """rows: (player, team, mpg, raw_impact, base_pr), already filtered mpg < cutoff."""
     col_w = (22, 5, 6, 11, 8)
     header = (
@@ -203,7 +205,7 @@ def print_bench_elite_audit(rows: list[tuple[str, str, float, float, int]]) -> N
     )
     print(
         f"Bench curve audit — top {BENCH_TOP_N} by Base PR with MPG < {BENCH_MPG_MAX:g} "
-        f"({TARGET_SEASON})",
+        f"({source_season})",
         flush=True,
     )
     print(header, flush=True)
@@ -217,21 +219,27 @@ def print_bench_elite_audit(rows: list[tuple[str, str, float, float, int]]) -> N
     print(flush=True)
 
 
-def main() -> None:
+def main(source_season: str | None = None, target_season: str | None = None) -> None:
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
+    _ = target_season
+
     con = sqlite3.connect(DB_PATH)
     try:
         ensure_table(con)
-        raw_rows = load_rows(con)
+        raw_rows = load_rows(con, source_season)
         if not raw_rows:
             print(
-                f"No player rows for season {TARGET_SEASON} (basic + advanced join).",
+                f"No player rows for season {source_season} (basic + advanced join).",
                 flush=True,
             )
             return
 
         con.execute(
             "DELETE FROM player_simulation_pr WHERE season = ?",
-            (TARGET_SEASON,),
+            (source_season,),
         )
 
         rows_out: list[tuple[str, str, str, int, int, float]] = []
@@ -249,7 +257,7 @@ def main() -> None:
             base_pr, mpg, raw_impact = out
             gp = fint(row.get("gp")) or 0
             team_s = str(team).strip()
-            rows_out.append((pn, team_s, TARGET_SEASON, base_pr, gp, mpg))
+            rows_out.append((pn, team_s, source_season, base_pr, gp, mpg))
             report.append((pn, team_s, mpg, raw_impact, base_pr))
 
         con.executemany(
@@ -263,11 +271,11 @@ def main() -> None:
         con.commit()
 
         report.sort(key=lambda x: (-x[4], -x[2], x[0]))
-        print_top_audit(report[:TOP_N])
+        print_top_audit(report[:TOP_N], source_season)
 
         bench = [r for r in report if r[2] < BENCH_MPG_MAX]
         bench.sort(key=lambda x: (-x[4], -x[2], x[0]))
-        print_bench_elite_audit(bench[:BENCH_TOP_N])
+        print_bench_elite_audit(bench[:BENCH_TOP_N], source_season)
     finally:
         con.close()
 

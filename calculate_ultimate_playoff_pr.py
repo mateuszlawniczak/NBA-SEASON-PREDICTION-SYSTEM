@@ -4,7 +4,7 @@ calculate_ultimate_playoff_pr.py
 Builds ``playoff_pr`` from ULTIMATE_PR (base PR), player_experience_pr
 (experience tier), and playoff_riser_choker (playoff_multiplier).
 
-Writes only ``ultimate_playoff_pr`` (replace each run). Does not modify other tables.
+Writes only ``ultimate_playoff_pr`` rows for the target season (idempotent per season).
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ import sqlite3
 import sys
 
 import pandas as pd
+
+from season_utils import SeasonPair, parse_cli_seasons
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -26,30 +28,49 @@ def _experience_columns(con: sqlite3.Connection) -> list[str]:
     return [row[1] for row in cur.fetchall()]
 
 
-def load_player_experience_pr(con: sqlite3.Connection) -> pd.DataFrame:
+def load_player_experience_pr(
+    con: sqlite3.Connection, source_season: str
+) -> pd.DataFrame:
     cols = _experience_columns(con)
     if "experience_level" in cols:
         return pd.read_sql_query(
-            "SELECT player_name, experience_level FROM player_experience_pr;",
+            """
+            SELECT player_name, experience_level
+            FROM player_experience_pr
+            WHERE season = ?;
+            """,
             con,
+            params=(source_season,),
         )
     return pd.read_sql_query(
-        "SELECT player_name FROM player_experience_pr;",
+        """
+        SELECT player_name
+        FROM player_experience_pr
+        WHERE season = ?;
+        """,
         con,
+        params=(source_season,),
     )
 
 
-def main() -> None:
+def main(source_season: str | None = None, target_season: str | None = None) -> None:
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
+
     con = sqlite3.connect(DB_PATH)
     try:
         ultimate = pd.read_sql_query(
             """
             SELECT player_name, pr AS base_pr, mapped_position, player_type
-            FROM ULTIMATE_PR;
+            FROM ULTIMATE_PR
+            WHERE season = ?;
             """,
             con,
+            params=(target_season,),
         )
-        experience = load_player_experience_pr(con)
+        experience = load_player_experience_pr(con, source_season)
         riser = pd.read_sql_query(
             "SELECT player_name, playoff_multiplier FROM playoff_riser_choker;",
             con,
@@ -96,29 +117,35 @@ def main() -> None:
             "playoff_pr",
         ]
     ].sort_values("playoff_pr", ascending=False)
+    out_df.insert(0, "season", target_season)
 
     con = sqlite3.connect(DB_PATH)
     try:
-        con.execute("DROP TABLE IF EXISTS ultimate_playoff_pr;")
         con.execute(
             """
-            CREATE TABLE ultimate_playoff_pr (
-                player_name        TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS ultimate_playoff_pr (
+                season             TEXT NOT NULL,
+                player_name        TEXT NOT NULL,
                 mapped_position    TEXT,
                 base_pr            REAL NOT NULL,
                 experience_level   TEXT NOT NULL,
                 youth_multiplier   REAL NOT NULL,
                 playoff_multiplier REAL NOT NULL,
-                playoff_pr         REAL NOT NULL
+                playoff_pr         REAL NOT NULL,
+                PRIMARY KEY (player_name, season)
             );
             """
+        )
+        con.execute(
+            "DELETE FROM ultimate_playoff_pr WHERE season = ?;",
+            (target_season,),
         )
         out_df.to_sql("ultimate_playoff_pr", con, index=False, if_exists="append")
         con.commit()
     finally:
         con.close()
 
-    _print_top15(out_df)
+    _print_top15(out_df.drop(columns=["season"]))
 
 
 def _print_top15(out_df: pd.DataFrame) -> None:

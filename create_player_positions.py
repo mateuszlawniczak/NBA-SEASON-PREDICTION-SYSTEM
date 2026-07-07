@@ -1,5 +1,6 @@
 """
-Build standardized player_positions (G / F / C) from player_stats_basic for 2024-25.
+Build standardized player_positions (G / F / C) from player_stats_basic for the
+source season.
 
 Creates only the player_positions table; does not alter other tables.
 """
@@ -8,6 +9,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+
+from season_utils import SeasonPair, parse_cli_seasons
 
 
 def _db_path() -> str:
@@ -43,7 +46,13 @@ def _map_position(abbrev: str | None) -> str | None:
     return None
 
 
-def main() -> None:
+def main(source_season: str | None = None, target_season: str | None = None) -> None:
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
+    _ = target_season
+
     db = _db_path()
     con = sqlite3.connect(db)
     cur = con.cursor()
@@ -63,8 +72,9 @@ def main() -> None:
         """
         SELECT player_name, position
         FROM player_stats_basic
-        WHERE season = '2024-25';
-        """
+        WHERE season = ?;
+        """,
+        (source_season,),
     )
     rows = cur.fetchall()
 
@@ -83,9 +93,10 @@ def main() -> None:
 
     con.commit()
     con.close()
-
-    print(f"[create_player_positions] DB: {db}")
-    print(f"[create_player_positions] Inserted {inserted} row(s); skipped {skipped} (unmapped/empty position).")
+    print(
+        f"player_positions: inserted {inserted}, skipped {skipped} "
+        f"(source season {source_season!r})."
+    )
 
 
 if __name__ == "__main__":

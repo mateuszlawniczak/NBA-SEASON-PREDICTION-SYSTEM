@@ -346,10 +346,22 @@ def _ro_connect() -> sqlite3.Connection:
  
 @st.cache_data(show_spinner=False)
 def load_sim_results() -> pd.DataFrame:
-    """simulation_results_25_26 — baseline championship odds + seed projections."""
+    """simulation_results — baseline championship odds + seed projections (2025-26)."""
     con = _ro_connect()
     try:
-        df = pd.read_sql_query("SELECT * FROM simulation_results_25_26", con)
+        df = pd.read_sql_query(
+            """
+            SELECT team, avg_wins,
+                   seed_1_pct, seed_2_pct, seed_3_pct, seed_4_pct, seed_5_pct,
+                   seed_6_pct, seed_7_pct, seed_8_pct, seed_9_pct, seed_10_pct,
+                   seed_11_pct, seed_12_pct, seed_13_pct, seed_14_pct, seed_15_pct,
+                   missed_playoffs_pct, first_round_pct, second_round_pct,
+                   conf_finals_pct, finals_pct, champion_pct
+            FROM simulation_results
+            WHERE season = '2025-26' AND run_id = 'production'
+            """,
+            con,
+        )
     finally:
         con.close()
  
@@ -381,19 +393,31 @@ def load_player_pr() -> pd.DataFrame:
 
     team_abbr is resolved in three passes so injured veterans and incoming
     rookies don't fall through as None:
-      1. player_starting_teams_25_26 — projected starters for this season.
+      1. player_starting_teams — projected starters for this season.
       2. player_stats_basic         — each player's most recent historical team.
       3. rookie_data                — the drafting team for 2025 incoming rookies.
     A conference column is then derived so the Conference / Team filters apply to
     the player table just like the projections table."""
     con = _ro_connect()
     try:
-        df = pd.read_sql_query("SELECT * FROM ULTIMATE_PR", con)
+        df = pd.read_sql_query(
+            """
+            SELECT player_name, pr, player_type, applied_effects, mapped_position
+            FROM ULTIMATE_PR
+            WHERE season = '2025-26'
+            """,
+            con,
+        )
 
         # --- Primary: projected starting teams for 2025-26 ---
         try:
             teams = pd.read_sql_query(
-                "SELECT player_name, team_abbr FROM player_starting_teams_25_26", con
+                """
+                SELECT player_name, team_abbr
+                FROM player_starting_teams
+                WHERE season = '2025-26'
+                """,
+                con,
             )
             df = df.merge(teams, on="player_name", how="left")
         except Exception:
@@ -697,7 +721,7 @@ def view_my_system(col_main, col_filters) -> None:
             df = load_sim_results().copy()
         except Exception as e:
             st.warning(
-                "Couldn't read `simulation_results_25_26`. Generate it by running "
+                "Couldn't read `simulation_results`. Generate it by running "
                 "`run_monte_carlo.py` first."
             )
             st.caption(f"Details: {e}")

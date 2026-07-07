@@ -17,6 +17,8 @@ from urllib.parse import quote_plus
 import requests
 from bs4 import BeautifulSoup
 
+from season_utils import SeasonPair, parse_cli_seasons
+
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -246,19 +248,27 @@ def fetch_position_bbref_cbb(player_name: str) -> str | None:
     return None
 
 
-def players_missing_position(con: sqlite3.Connection) -> list[str]:
+def players_missing_position(con: sqlite3.Connection, target_season: str) -> list[str]:
     cur = con.cursor()
     rows = cur.execute(
         """
         SELECT player_name FROM ULTIMATE_PR
-        WHERE mapped_position IS NULL OR TRIM(mapped_position) = ''
+        WHERE season = ?
+          AND (mapped_position IS NULL OR TRIM(mapped_position) = '')
         ORDER BY player_name
-        """
+        """,
+        (target_season,),
     ).fetchall()
     return [r[0] for r in rows]
 
 
-def main() -> None:
+def main(source_season: str | None = None, target_season: str | None = None) -> None:
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
+    _ = source_season
+
     con = sqlite3.connect(DB_PATH)
     try:
         ensure_mapped_position_column(con)
@@ -276,8 +286,10 @@ def main() -> None:
                 SELECT u.player_name
                 FROM ULTIMATE_PR u
                 INNER JOIN player_positions p ON p.player_name = u.player_name
-                WHERE u.mapped_position IS NULL OR TRIM(IFNULL(u.mapped_position, '')) = ''
-                """
+                WHERE u.season = ?
+                  AND (u.mapped_position IS NULL OR TRIM(IFNULL(u.mapped_position, '')) = '')
+                """,
+                (target_season,),
             )
             updated_local = [r[0] for r in cur.fetchall()]
 
@@ -290,14 +302,16 @@ def main() -> None:
                     WHERE p.player_name = ULTIMATE_PR.player_name
                     LIMIT 1
                 )
-                WHERE (
+                WHERE season = ?
+                  AND (
                     mapped_position IS NULL OR TRIM(IFNULL(mapped_position, '')) = ''
                 )
                 AND EXISTS (
                     SELECT 1 FROM player_positions p
                     WHERE p.player_name = ULTIMATE_PR.player_name
                 )
-                """
+                """,
+                (target_season,),
             )
             con.commit()
         else:
@@ -306,7 +320,7 @@ def main() -> None:
                 flush=True,
             )
 
-        missing_after_local = players_missing_position(con)
+        missing_after_local = players_missing_position(con, target_season)
 
         nba_ok: list[str] = []
         bbref_ok: list[str] = []
@@ -316,8 +330,8 @@ def main() -> None:
             time.sleep(NBA_API_SLEEP_SEC)
             if mapped:
                 cur.execute(
-                    "UPDATE ULTIMATE_PR SET mapped_position = ? WHERE player_name = ?",
-                    (mapped, name),
+                    "UPDATE ULTIMATE_PR SET mapped_position = ? WHERE player_name = ? AND season = ?",
+                    (mapped, name, target_season),
                 )
                 con.commit()
                 nba_ok.append(name)
@@ -327,13 +341,13 @@ def main() -> None:
             time.sleep(BBREF_SLEEP_SEC)
             if mapped:
                 cur.execute(
-                    "UPDATE ULTIMATE_PR SET mapped_position = ? WHERE player_name = ?",
-                    (mapped, name),
+                    "UPDATE ULTIMATE_PR SET mapped_position = ? WHERE player_name = ? AND season = ?",
+                    (mapped, name, target_season),
                 )
                 con.commit()
                 bbref_ok.append(name)
 
-        still_missing = players_missing_position(con)
+        still_missing = players_missing_position(con, target_season)
 
         print("\n" + "=" * 60, flush=True)
         print("ULTIMATE_PR mapped_position — run summary", flush=True)

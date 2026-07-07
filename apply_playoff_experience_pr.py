@@ -5,8 +5,7 @@ Applies a postseason experience multiplier to ``player_projected_pr.projected_pr
 for a target season, keyed by each player's team and that team's ``playoff_result``.
 
 Reads: player_projected_pr, team_stats_playoffs (LEFT JOIN on team / team_abbr).
-Writes: ``player_experience_pr`` — idempotent DELETE for the target season's players
-followed by INSERT.
+Writes: ``player_experience_pr`` — idempotent DELETE for the source season followed by INSERT.
 """
 
 from __future__ import annotations
@@ -16,9 +15,9 @@ import sqlite3
 import sys
 from typing import Any
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
+from season_utils import SeasonPair, parse_cli_seasons
 
-TARGET_SEASON = "2024-25"
+DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
 
 # Exact playoff_result strings -> multiplier
 PLAYOFF_EXPERIENCE_MULTIPLIER: dict[str, float] = {
@@ -61,14 +60,22 @@ def ensure_table(con: sqlite3.Connection) -> None:
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS player_experience_pr (
-            player_name     TEXT    NOT NULL PRIMARY KEY,
-            adjusted_exp_pr INTEGER NOT NULL
+            player_name     TEXT    NOT NULL,
+            season          TEXT    NOT NULL,
+            adjusted_exp_pr INTEGER NOT NULL,
+            PRIMARY KEY (player_name, season)
         );
         """
     )
 
 
-def main() -> None:
+def main(source_season: str | None = None, target_season: str | None = None) -> None:
+    if source_season is None or target_season is None:
+        pair: SeasonPair = parse_cli_seasons()
+        source_season = pair.source
+        target_season = pair.target
+    _ = target_season
+
     con = sqlite3.connect(DB_PATH)
     try:
         ensure_table(con)
@@ -87,11 +94,11 @@ def main() -> None:
             WHERE p.season = ?
             ORDER BY p.player_name;
             """,
-            (TARGET_SEASON,),
+            (source_season,),
         )
         rows = cur.fetchall()
 
-        out: list[tuple[str, int]] = []
+        out: list[tuple[str, str, int]] = []
         for player_name, projected_pr, playoff_result, joined_team in rows:
             pr = fint(projected_pr)
             if pr is None:
@@ -99,27 +106,23 @@ def main() -> None:
             had_team_row = joined_team is not None
             mult = multiplier_for(playoff_result, had_team_row)
             adjusted = int(round(pr * mult))
-            out.append((player_name, adjusted))
+            out.append((player_name, source_season, adjusted))
 
         con.execute("BEGIN")
         con.execute(
-            """
-            DELETE FROM player_experience_pr
-            WHERE player_name IN (
-                SELECT DISTINCT player_name
-                FROM player_projected_pr
-                WHERE season = ?
-            );
-            """,
-            (TARGET_SEASON,),
+            "DELETE FROM player_experience_pr WHERE season = ?;",
+            (source_season,),
         )
         con.executemany(
-            "INSERT INTO player_experience_pr (player_name, adjusted_exp_pr) VALUES (?, ?);",
+            """
+            INSERT INTO player_experience_pr (player_name, season, adjusted_exp_pr)
+            VALUES (?, ?, ?);
+            """,
             out,
         )
         con.commit()
         print(
-            f"  [ok] player_experience_pr: wrote {len(out)} rows for season {TARGET_SEASON}.",
+            f"  [ok] player_experience_pr: wrote {len(out)} rows for season {source_season}.",
             flush=True,
         )
     finally:
