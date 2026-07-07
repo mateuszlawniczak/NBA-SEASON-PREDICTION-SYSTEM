@@ -99,6 +99,7 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
                 SELECT p.mapped_position
                 FROM player_positions p
                 WHERE p.player_name = ULTIMATE_PR.player_name
+                  AND p.season = ?
                 LIMIT 1
             )
             WHERE season = ?
@@ -106,9 +107,10 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
               AND EXISTS (
                 SELECT 1 FROM player_positions p
                 WHERE p.player_name = ULTIMATE_PR.player_name
+                  AND p.season = ?
               )
             """,
-            (target_season,),
+            (source_season, target_season, source_season),
         )
         con.commit()
         n = cur.execute(

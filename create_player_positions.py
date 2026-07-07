@@ -46,6 +46,44 @@ def _map_position(abbrev: str | None) -> str | None:
     return None
 
 
+CREATE_PLAYER_POSITIONS = """
+CREATE TABLE IF NOT EXISTS player_positions (
+    season          TEXT NOT NULL,
+    player_name     TEXT NOT NULL,
+    mapped_position TEXT NOT NULL,
+    PRIMARY KEY (season, player_name)
+);
+"""
+
+# Rows left by the Phase 2 2022-23 run before this migration (source = 2021-22).
+_LEGACY_PLAYER_POSITIONS_SEASON = "2021-22"
+
+
+def _ensure_player_positions_schema(cur: sqlite3.Cursor) -> None:
+    row = cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='player_positions' LIMIT 1"
+    ).fetchone()
+    if row is None:
+        cur.execute(CREATE_PLAYER_POSITIONS)
+        return
+
+    cols = {r[1] for r in cur.execute("PRAGMA table_info(player_positions)").fetchall()}
+    if "season" in cols:
+        return
+
+    cur.execute("ALTER TABLE player_positions RENAME TO _player_positions_legacy")
+    cur.execute(CREATE_PLAYER_POSITIONS)
+    cur.execute(
+        """
+        INSERT INTO player_positions (season, player_name, mapped_position)
+        SELECT ?, player_name, mapped_position
+        FROM _player_positions_legacy
+        """,
+        (_LEGACY_PLAYER_POSITIONS_SEASON,),
+    )
+    cur.execute("DROP TABLE _player_positions_legacy")
+
+
 def main(source_season: str | None = None, target_season: str | None = None) -> None:
     if source_season is None or target_season is None:
         pair: SeasonPair = parse_cli_seasons()
@@ -57,16 +95,8 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
     con = sqlite3.connect(db)
     cur = con.cursor()
 
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS player_positions (
-            player_name     TEXT PRIMARY KEY,
-            mapped_position TEXT NOT NULL
-        );
-        """
-    )
-
-    cur.execute("DELETE FROM player_positions;")
+    _ensure_player_positions_schema(cur)
+    cur.execute("DELETE FROM player_positions WHERE season = ?;", (source_season,))
 
     cur.execute(
         """
@@ -86,8 +116,11 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
             skipped += 1
             continue
         cur.execute(
-            "INSERT INTO player_positions (player_name, mapped_position) VALUES (?, ?);",
-            (player_name, mapped),
+            """
+            INSERT INTO player_positions (season, player_name, mapped_position)
+            VALUES (?, ?, ?);
+            """,
+            (source_season, player_name, mapped),
         )
         inserted += 1
 

@@ -285,11 +285,12 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
                 """
                 SELECT u.player_name
                 FROM ULTIMATE_PR u
-                INNER JOIN player_positions p ON p.player_name = u.player_name
+                INNER JOIN player_positions p
+                  ON p.player_name = u.player_name AND p.season = ?
                 WHERE u.season = ?
                   AND (u.mapped_position IS NULL OR TRIM(IFNULL(u.mapped_position, '')) = '')
                 """,
-                (target_season,),
+                (source_season, target_season),
             )
             updated_local = [r[0] for r in cur.fetchall()]
 
@@ -300,6 +301,7 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
                     SELECT p.mapped_position
                     FROM player_positions p
                     WHERE p.player_name = ULTIMATE_PR.player_name
+                      AND p.season = ?
                     LIMIT 1
                 )
                 WHERE season = ?
@@ -309,9 +311,10 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
                 AND EXISTS (
                     SELECT 1 FROM player_positions p
                     WHERE p.player_name = ULTIMATE_PR.player_name
+                      AND p.season = ?
                 )
                 """,
-                (target_season,),
+                (source_season, target_season, source_season),
             )
             con.commit()
         else:

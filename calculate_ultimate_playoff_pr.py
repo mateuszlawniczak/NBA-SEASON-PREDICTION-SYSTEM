@@ -72,8 +72,13 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
         )
         experience = load_player_experience_pr(con, source_season)
         riser = pd.read_sql_query(
-            "SELECT player_name, playoff_multiplier FROM playoff_riser_choker;",
+            """
+            SELECT player_name, playoff_multiplier
+            FROM playoff_riser_choker
+            WHERE season = ?;
+            """,
             con,
+            params=(target_season,),
         )
     finally:
         con.close()

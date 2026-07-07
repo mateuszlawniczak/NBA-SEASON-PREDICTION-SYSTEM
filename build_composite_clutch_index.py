@@ -1,9 +1,10 @@
 """
 build_composite_clutch_index.py
 -------------------------------
-3-year window (2022-23, 2023-24, 2024-25): fetch playoff vs regular advanced
+Trailing 3-year window ending at source season: fetch playoff vs regular advanced
 metrics, Q4 true shooting shifts, and elimination-game TS vs baseline; score
-each player (-3..+3) and write ``playoff_riser_choker`` only (table replace).
+each player (-3..+3) and write ``playoff_riser_choker`` rows for the target season
+(idempotent DELETE + insert per target season).
 
 Does not alter any other SQLite tables.
 """
@@ -82,6 +83,52 @@ FMVPS_SET = {_norm_player_name(n) for n in FMVPS_LEGACY_2025_26}
 
 def _fmvp_set_for_target(target_season: str) -> set[str]:
     return {_norm_player_name(n) for n in fmvp_names_before_target(target_season)}
+
+
+CREATE_PLAYOFF_RISER_CHOKER = """
+CREATE TABLE IF NOT EXISTS playoff_riser_choker (
+    season              TEXT NOT NULL,
+    player_name         TEXT NOT NULL,
+    baseline_score      INTEGER NOT NULL,
+    q4_score            INTEGER NOT NULL,
+    elim_score          INTEGER NOT NULL,
+    total_score         INTEGER NOT NULL,
+    playoff_multiplier  REAL NOT NULL,
+    PRIMARY KEY (season, player_name)
+);
+"""
+
+# Rows left by the Phase 2 2022-23 run before this migration (target = 2022-23).
+_LEGACY_PLAYOFF_RISER_CHOKER_SEASON = "2022-23"
+
+
+def _ensure_playoff_riser_choker_schema(con: sqlite3.Connection) -> None:
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='playoff_riser_choker' LIMIT 1"
+    ).fetchone()
+    if row is None:
+        con.execute(CREATE_PLAYOFF_RISER_CHOKER)
+        return
+
+    cols = {r[1] for r in con.execute("PRAGMA table_info(playoff_riser_choker)").fetchall()}
+    if "season" in cols:
+        return
+
+    con.execute("ALTER TABLE playoff_riser_choker RENAME TO _playoff_riser_choker_legacy")
+    con.execute(CREATE_PLAYOFF_RISER_CHOKER)
+    con.execute(
+        """
+        INSERT INTO playoff_riser_choker (
+            season, player_name, baseline_score, q4_score, elim_score,
+            total_score, playoff_multiplier
+        )
+        SELECT ?, player_name, baseline_score, q4_score, elim_score,
+               total_score, playoff_multiplier
+        FROM _playoff_riser_choker_legacy
+        """,
+        (_LEGACY_PLAYOFF_RISER_CHOKER_SEASON,),
+    )
+    con.execute("DROP TABLE _playoff_riser_choker_legacy")
 
 
 def fetch_advanced_totals(
@@ -337,6 +384,7 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
 
     out = pd.DataFrame(
         {
+            "season": target_season,
             "player_name": df[NAME_COL],
             "baseline_score": b.astype(int),
             "q4_score": q.astype(int),
@@ -346,11 +394,18 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
         }
     )
 
-    print(f"Saving {len(out)} rows to playoff_riser_choker ...", flush=True)
+    print(
+        f"Saving {len(out)} rows to playoff_riser_choker (season={target_season!r}) ...",
+        flush=True,
+    )
     con = sqlite3.connect(DB_PATH)
     try:
-        con.execute("DROP TABLE IF EXISTS playoff_riser_choker")
-        out.to_sql("playoff_riser_choker", con, index=False, if_exists="replace")
+        _ensure_playoff_riser_choker_schema(con)
+        con.execute(
+            "DELETE FROM playoff_riser_choker WHERE season = ?;",
+            (target_season,),
+        )
+        out.to_sql("playoff_riser_choker", con, index=False, if_exists="append")
         con.commit()
     finally:
         con.close()
