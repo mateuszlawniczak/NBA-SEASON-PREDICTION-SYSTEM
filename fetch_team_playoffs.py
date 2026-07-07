@@ -450,9 +450,25 @@ ON CONFLICT (season, team_id) DO UPDATE SET
 
 
 def upsert_season(con: sqlite3.Connection, season: str, merged: dict) -> int:
+    # Schema-aware write: the live team_stats_playoffs table may have drifted from
+    # this script's DDL (e.g. migrations dropped made_playoffs/prev_season and added
+    # playoff_result/conference). Insert only the intersection of columns this fetcher
+    # produces and columns that actually exist, so a raw re-fetch stays compatible.
+    live_cols = [r[1] for r in con.execute("PRAGMA table_info(team_stats_playoffs)")]
+    produced = {
+        "season", "team_id", "team_name", "team_abbr",
+        "pts_per_game", "opp_pts_per_game",
+        "off_rating", "def_rating", "net_rating",
+        "adj_off_rating", "adj_def_rating", "adj_net_rating", "pace",
+        "wins", "losses", "win_pct",
+        "conference_seed", "made_playoffs",
+        "prev_season", "prev_seed", "prev_playoff_result",
+    }
+    write_cols = [c for c in live_cols if c in produced]
+
     rows = []
     for tid, rec in merged.items():
-        rows.append({
+        full = {
             "season":   season,
             "team_id":  tid,
             "team_name": rec.get("team_name", ""),
@@ -478,10 +494,17 @@ def upsert_season(con: sqlite3.Connection, season: str, merged: dict) -> int:
             "prev_season":         None,
             "prev_seed":           None,
             "prev_playoff_result": None,
-        })
+        }
+        rows.append({c: full.get(c) for c in write_cols})
+
+    col_list     = ", ".join(write_cols)
+    placeholders = ", ".join(f":{c}" for c in write_cols)
+    sql = f"INSERT INTO team_stats_playoffs ({col_list}) VALUES ({placeholders})"
 
     cur = con.cursor()
-    cur.executemany(UPSERT_SQL, rows)
+    # Additive + idempotent for THIS season only; never touches other seasons.
+    cur.execute("DELETE FROM team_stats_playoffs WHERE season = ?", (season,))
+    cur.executemany(sql, rows)
     con.commit()
     return len(rows)
 
