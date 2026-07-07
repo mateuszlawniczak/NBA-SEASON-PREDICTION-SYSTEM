@@ -1,5 +1,10 @@
-# Track the database for now since it's small and critical for the prototype
-# nba_data.db  <-- WE REMOVE THIS LINE
+# Local SQLite databases (not versioned)
+*.db
+nba_data.pre_*.db
+
+# Review / backup artifacts
+_*.csv
+_*.log
 
 .env
 __pycache__/
