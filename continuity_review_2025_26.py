@@ -8,7 +8,7 @@ import sqlite3
 import sys
 
 import run_monte_carlo
-from build_team_playoff_pr_25_26 import (
+from build_team_playoff_pr import (
     Top2Status,
     _evaluate_neutral_handling,
     _legacy_continuity_tier,

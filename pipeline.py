@@ -20,15 +20,15 @@ import apply_playoff_experience_pr
 import apply_progression
 import build_composite_clutch_index
 import build_player_durability_profiles
-import build_projected_team_pr_25_26
-import build_team_playoff_pr_25_26
+import build_projected_team_pr
+import build_team_playoff_pr
 import build_ultimate_pr
 import calculate_final_simulation_pr
 import calculate_player_pr
-import calculate_rookie_projected_pr_25_26
+import calculate_rookie_projected_pr
 import calculate_ultimate_playoff_pr
 import create_player_positions
-import fetch_team_coaches_25_26
+import fetch_team_coaches
 import run_monte_carlo
 import update_ultimate_pr_positions
 
@@ -36,8 +36,8 @@ Step = tuple[str, Callable[..., None], str]
 
 FEATURES: list[Step] = [
     ("create_player_positions", create_player_positions.main, "features"),
-    ("fetch_team_coaches", fetch_team_coaches_25_26.main, "features"),
-    ("calculate_rookie_projected_pr", calculate_rookie_projected_pr_25_26.main, "features"),
+    ("fetch_team_coaches", fetch_team_coaches.main, "features"),
+    ("calculate_rookie_projected_pr", calculate_rookie_projected_pr.main, "features"),
     ("build_composite_clutch_index", build_composite_clutch_index.main, "features"),
 ]
 
@@ -51,8 +51,8 @@ PROJECTION: list[Step] = [
     ("calculate_ultimate_playoff_pr", calculate_ultimate_playoff_pr.main, "projection"),
     ("apply_pedigree_trajectory_boost", apply_pedigree_trajectory_boost.main, "projection"),
     ("build_player_durability_profiles", build_player_durability_profiles.main, "projection"),
-    ("build_projected_team_pr", build_projected_team_pr_25_26.main, "projection"),
-    ("build_team_playoff_pr", build_team_playoff_pr_25_26.main, "projection"),
+    ("build_projected_team_pr", build_projected_team_pr.main, "projection"),
+    ("build_team_playoff_pr", build_team_playoff_pr.main, "projection"),
 ]
 
 SIMULATION: list[Step] = [
