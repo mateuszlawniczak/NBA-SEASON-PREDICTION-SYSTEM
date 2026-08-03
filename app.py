@@ -513,6 +513,85 @@ def load_player_pr(season: str) -> pd.DataFrame:
     return df
  
  
+def _continuity_label(value) -> "str | None":
+    """1.05 -> HIGH, 1.00 -> DEFAULT, 0.95 -> LOW. Anything else (or NaN) passes
+    through as the raw number so nothing is silently hidden."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    if abs(value - 1.05) < 1e-6:
+        return "HIGH"
+    if abs(value - 1.00) < 1e-6:
+        return "DEFAULT"
+    if abs(value - 0.95) < 1e-6:
+        return "LOW"
+    return f"{value:g}"
+
+
+@st.cache_data(show_spinner=False)
+def load_formula_values(season: str) -> pd.DataFrame:
+    """Team-level formula build-up — DISPLAY ONLY, nothing computed here.
+
+    Reads three already-stored tables and joins them on team + season:
+      * team_projection          -> base_team_pr, coach_grade, playstyle,
+                                     final_team_pr, rotation_players  (RS)
+      * team_playoff_projection  -> base_8man_pr, amplified_coach_mult,
+                                     playstyle_mult, continuity_mult,
+                                     final_playoff_pr                (PO)
+      * team_coaches             -> coach_name
+
+    Each table is read independently so a missing/renamed table in one layer
+    doesn't blank out the other two — outer-joined on team so partial data
+    still renders (blank cells, not a crash).
+    """
+    con = _ro_connect()
+    empty_team_col = pd.DataFrame({"team": pd.Series(dtype="object")})
+    try:
+        try:
+            tp = pd.read_sql_query(
+                """
+                SELECT team_abbr AS team, base_team_pr, coach_grade, playstyle,
+                       final_team_pr, rotation_players
+                FROM team_projection
+                WHERE season = ?
+                """,
+                con, params=(season,),
+            )
+        except Exception:
+            tp = empty_team_col.copy()
+
+        try:
+            tpp = pd.read_sql_query(
+                """
+                SELECT team, base_8man_pr, amplified_coach_mult, playstyle_mult,
+                       continuity_mult, final_playoff_pr
+                FROM team_playoff_projection
+                WHERE season = ?
+                """,
+                con, params=(season,),
+            )
+        except Exception:
+            tpp = empty_team_col.copy()
+
+        try:
+            tc = pd.read_sql_query(
+                "SELECT team_abbr AS team, coach_name FROM team_coaches WHERE season = ?",
+                con, params=(season,),
+            )
+        except Exception:
+            tc = empty_team_col.copy()
+    finally:
+        con.close()
+
+    df = tp.merge(tpp, on="team", how="outer").merge(tc, on="team", how="outer")
+    if df.empty:
+        return df
+
+    df["conference"] = df["team"].map(mc.TEAM_CONFERENCE).fillna("—")
+    if "continuity_mult" in df.columns:
+        df["continuity_label"] = df["continuity_mult"].apply(_continuity_label)
+    return df
+
+
 @st.cache_data(show_spinner=False)
 def list_tables() -> list[str]:
     con = _ro_connect()
@@ -627,7 +706,7 @@ def style_table(df: pd.DataFrame, heat_col: str | None = None):
 # VIEWS
 # ===========================================================================
  
-_VIEW_TOGGLES = ["show_main", "show_precise", "show_players"]
+_VIEW_TOGGLES = ["show_main", "show_precise", "show_players", "show_formula"]
 
 
 def _exclusive_toggle(active_key: str) -> None:
@@ -677,6 +756,143 @@ def _conf_mismatch_msg(selected_teams: list[str]) -> str:
     return "Nothing matches those filters broski."
 
 
+def _render_formula_view(
+    season: str,
+    conf_pick: str,
+    selected_teams: list[str],
+    pos_all: bool,
+    pos_g: bool,
+    pos_f: bool,
+    pos_c: bool,
+) -> None:
+    """DISPLAY ONLY. Renders the stored intermediate formula values — no new
+    values are computed here, nothing is written to the database."""
+    # ---- team-level build-up ----
+    st.markdown('<div class="eop-eyebrow">Formula build-up · team ratings</div>',
+                unsafe_allow_html=True)
+    try:
+        fdf = load_formula_values(season).copy()
+    except Exception as e:
+        st.info(
+            f"Limited data for {_season_display(season)} — formula values "
+            "could not be loaded."
+        )
+        st.caption(f"Details: {e}")
+        fdf = pd.DataFrame()
+
+    if fdf.empty:
+        st.info(
+            f"Limited data for {_season_display(season)} — no stored formula "
+            "values found for this season."
+        )
+    else:
+        if conf_pick != "Both" and "conference" in fdf.columns:
+            fdf = fdf[fdf["conference"] == conf_pick]
+        if selected_teams and "team" in fdf.columns:
+            fdf = fdf[fdf["team"].isin(selected_teams)]
+
+        if fdf.empty:
+            st.markdown(
+                '<div style="text-align: center; color: white; font-weight: bold; '
+                f'font-size: 24px; margin-top: 50px;">{_conf_mismatch_msg(selected_teams)}'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            # Ordered so the RS build-up reads left-to-right (base -> inputs ->
+            # final), then the PO build-up the same way.
+            display_cols = {
+                "team": "Team",
+                "conference": "Conf",
+                "coach_name": "Coach",
+                "coach_grade": "Coach Grade",
+                "playstyle": "Playstyle",
+                "base_team_pr": "Base Team PR (RS)",
+                "final_team_pr": "Final Team PR (RS)",
+                "base_8man_pr": "Base 8-Man PR (PO)",
+                "amplified_coach_mult": "Amp. Coach Mult (PO)",
+                "playstyle_mult": "Playstyle Mult (PO)",
+                "continuity_mult": "Continuity Mult (PO)",
+                "continuity_label": "Continuity",
+                "final_playoff_pr": "Final Playoff PR (PO)",
+                "rotation_players": "Rotation (9-man, RS)",
+            }
+            cols = [c for c in display_cols if c in fdf.columns]
+            out = fdf[cols].rename(columns=display_cols)
+            sort_col = next(
+                (c for c in ["Final Team PR (RS)", "Team"] if c in out.columns),
+                out.columns[0],
+            )
+            out = out.sort_values(sort_col, ascending=False).reset_index(drop=True)
+            out = out.set_index("Team")
+
+            if selected_teams:
+                row_px = 35
+                dyn_height = int((len(out) + 1) * row_px + 3)
+                st.dataframe(style_table(out), use_container_width=True, height=dyn_height)
+            else:
+                st.dataframe(style_table(out), use_container_width=True, height=560)
+
+            st.caption(
+                "RS = regular season (`team_projection`) · PO = playoffs "
+                "(`team_playoff_projection`). Continuity: 1.05 = HIGH, "
+                "1.00 = DEFAULT, 0.95 = LOW. Every value here is read directly "
+                "from stored tables — nothing is recomputed on this page."
+            )
+
+    # ---- player-level build-up ----
+    st.markdown('<div class="eop-eyebrow">Formula build-up · player ratings</div>',
+                unsafe_allow_html=True)
+    try:
+        pdf = load_player_pr(season).copy()
+    except Exception as e:
+        st.info(
+            f"Limited data for {_season_display(season)} — player formula "
+            "values could not be loaded."
+        )
+        st.caption(f"Details: {e}")
+        return
+
+    if pdf.empty:
+        st.info(
+            f"Limited data for {_season_display(season)} — no player ratings "
+            "stored for this season."
+        )
+        return
+
+    if conf_pick != "Both" and "conference" in pdf.columns:
+        pdf = pdf[pdf["conference"] == conf_pick]
+    if selected_teams and "team_abbr" in pdf.columns:
+        pdf = pdf[pdf["team_abbr"].isin(selected_teams)]
+
+    pos_col = next((c for c in ["mapped_position", "position", "pos"]
+                    if c in pdf.columns), None)
+    selected_pos = [k for k, v in {"G": pos_g, "F": pos_f, "C": pos_c}.items() if v]
+    if pos_all or not selected_pos:
+        selected_pos = ["G", "F", "C"]
+    if pos_col:
+        pdf = pdf[pdf[pos_col].astype(str).str.strip().str.upper().isin(selected_pos)]
+
+    if "pr" in pdf.columns:
+        pdf = pdf.sort_values("pr", ascending=False)
+
+    display_pcols = [c for c in ["player_name", "team_abbr", "conference", pos_col,
+                                  "pr", "player_type", "applied_effects"]
+                      if c in pdf.columns]
+    pdisp = pdf[display_pcols].reset_index(drop=True).rename(columns={
+        "player_name": "Player", "team_abbr": "Team", "conference": "Conf",
+        "mapped_position": "Pos", "position": "Pos", "pos": "Pos",
+        "pr": "PR", "player_type": "Player Type", "applied_effects": "Applied Effects",
+    })
+    if pdisp.empty:
+        st.info(
+            f"Limited data for {_season_display(season)} — no players match "
+            "the current filters."
+        )
+        return
+    st.dataframe(style_table(pdisp), use_container_width=True, hide_index=True, height=440)
+
+
 def view_my_system(col_main, col_filters) -> None:
     st.markdown(
         "<style> [data-testid='stDataFrame'] th { font-size: 1.15rem !important; } </style>",
@@ -687,6 +903,7 @@ def view_my_system(col_main, col_filters) -> None:
         st.session_state["show_main"] = True
         st.session_state["show_precise"] = False
         st.session_state["show_players"] = False
+        st.session_state["show_formula"] = False
 
     try:
         season_options = load_available_seasons()
@@ -727,10 +944,15 @@ def view_my_system(col_main, col_filters) -> None:
             show_players = st.checkbox(
                 "Show players PR", key="show_players",
                 on_change=_exclusive_toggle, args=("show_players",))
+            show_formula = st.checkbox(
+                "Formula values", key="show_formula",
+                on_change=_exclusive_toggle, args=("show_formula",),
+                help="Debug view: the stored intermediate values that build up "
+                     "each team's (and player's) rating — read-only.")
 
             # Position filters live right under the players toggle and only
-            # appear when the player table is active.
-            if show_players:
+            # appear when a player table is active (plain PR or formula values).
+            if show_players or show_formula:
                 # Seed position state the moment the player section appears so
                 # "ALL" starts checked instead of blank. Must run before the
                 # widgets are instantiated below.
@@ -779,6 +1001,13 @@ def view_my_system(col_main, col_filters) -> None:
             '— Monte-Carlo baseline</div>',
             unsafe_allow_html=True,
         )
+
+        if show_formula:
+            _render_formula_view(
+                selected_season, conf_pick, selected_teams,
+                pos_all, pos_g, pos_f, pos_c,
+            )
+            return
 
         try:
             df = load_sim_results(selected_season).copy()
