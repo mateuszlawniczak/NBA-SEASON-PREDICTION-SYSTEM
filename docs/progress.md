@@ -5,7 +5,7 @@
 > as state changes — it holds the *present*, not history (history lives in git and
 > `EXPERIMENTS.md`).
 
-Last updated: 2026-08-03
+Last updated: 2026-08-04
 
 ---
 
@@ -80,15 +80,23 @@ Scores are produced by `compute_baseline_scores.py` and `compute_engine_scores.p
 
 ## Deferred cleanup tickets (real, but not urgent — don't let them block formula work)
 
-- **Rename the misnamed `_25_26` scripts** (`build_projected_team_pr_25_26.py`,
-  `build_team_playoff_pr_25_26.py`, `calculate_rookie_projected_pr_25_26.py`,
-  `fetch_team_coaches_25_26.py`). They ARE season-parameterized and work for all years — only
-  the names lie. Verify-then-rename; renaming means updating imports, so do it carefully as
-  its own step. *(Planned next with Sonnet.)*
-- **Data-provenance split.** Seasons 2017-18 → 2019-20 were loaded via `heal_pass/` + backfills;
-  the standard `fetch_*` scripts only cover 2020-21 → 2025-26. So a naive data refresh would
-  only touch the newer seasons. Real fix = season-parameterize the fetch scripts. Deferred to
-  post-formula cleanup (dormant during tuning — you won't re-fetch while tuning).
+- **`_25_26` script rename — DONE.** `build_projected_team_pr_25_26.py`,
+  `build_team_playoff_pr_25_26.py`, `calculate_rookie_projected_pr_25_26.py`, and
+  `fetch_team_coaches_25_26.py` were renamed (suffix dropped) via `git mv`; `pipeline.py`
+  imports updated; verified byte-identical `simulation_results` hash before/after for
+  2025-26. `continuity_review_2025_26.py` intentionally kept its name (separate,
+  still-open liveness question).
+- **Fetch-layer overhaul: INVESTIGATED and DEFERRED.** Findings: (a) NBA API silently
+  dropped the `gs` and `position` fields — current fetch scripts return NULL for these on
+  new fetches, though existing stored data is intact and correct; (b) all formula-relevant
+  columns (`mpg, gp, ast, ts_pct, fg3_pct, pts, total_minutes, deflections, off_reb,
+  def_reb`) verified bit-for-bit correct across seasons vs a clean re-fetch — the data
+  foundation is solid; (c) a true unified-fetch rebuild spans player + team + league +
+  coach fetch scripts (13 scripts total, several feeding predictions), so it's a
+  multi-session task that risks the backtest baseline — deferred until a genuinely new
+  season needs fetching. `fetch_player_stats.py` (Script 1) exists as a starting point if
+  resumed. **Active phase remains Phase 4 — formula tuning; this is explicitly not the
+  current focus.**
 - **`fetch_player_starting_teams_25_26.py` deleted** (dead code, verified). Deletion staged in
   git, commit pending.
 

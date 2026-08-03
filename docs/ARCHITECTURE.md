@@ -64,10 +64,14 @@ Tables are **season-keyed** (a `season` column), not year-suffixed. The old
 Intermediate player tables store the **stats season** used to compute ratings.
 Downstream tables store the **season being predicted**.
 
-> **Filename note:** Several live scripts still carry a `_25_26` suffix
-> (`build_projected_team_pr_25_26.py`, `fetch_team_coaches_25_26.py`,
-> `calculate_rookie_projected_pr_25_26.py`). They are fully season-parameterized and
-> write to the generic table names above — the suffix is legacy naming only.
+> **Filename note (resolved 2026-08):** the `_25_26` suffix that used to be on
+> `build_projected_team_pr_25_26.py`, `build_team_playoff_pr_25_26.py`,
+> `fetch_team_coaches_25_26.py`, and `calculate_rookie_projected_pr_25_26.py` was
+> dropped via `git mv` (they are fully season-parameterized and always wrote to the
+> generic table names above — the suffix was legacy naming only). Now:
+> `build_projected_team_pr.py`, `build_team_playoff_pr.py`, `fetch_team_coaches.py`,
+> `calculate_rookie_projected_pr.py`. `continuity_review_2025_26.py` intentionally kept
+> its name (separate, still-open liveness question).
 
 ---
 
@@ -271,6 +275,18 @@ into `player_starting_teams`.
 
 This layer runs **before** the pipeline and is not re-invoked per target season.
 
+> **Upstream API drift (found 2026-08):** the NBA stats API has silently dropped the
+> `gs` (games started) and `position` fields from the endpoints `fetch_player_basic.py`
+> was written against (`LeagueDashPlayerStats` / `LeagueDashPlayerBioStats` no longer
+> return them at all). A fresh fetch today gets `NULL` for both on every row; the values
+> currently in `player_stats_basic`/`player_stats_advanced` are intact and correct only
+> because they were already backfilled in place by `hydrate_player_basic.py` /
+> `heal_pass/fix2_position.py` / `heal_pass/fix4_gs.py` (via `PlayerCareerStats` +
+> `PlayerIndex` + a basketball-reference fallback) before the drift happened. This is why
+> the raw fetch layer is not fully self-sufficient for these two columns — a re-fetch of
+> any season now depends on those fallback/stored values, not the primary endpoints.
+> Investigated in depth and deferred; see `docs/progress.md`.
+
 ### 6.2 Feature layer
 
 **One-time / offline** (not in `pipeline.py`):
@@ -283,9 +299,9 @@ This layer runs **before** the pipeline and is not re-invoked per target season.
 
 **Per-target** (in pipeline **features** stage):
 
-- `fetch_team_coaches_25_26.py` — opening-night coaches for target season →
+- `fetch_team_coaches.py` — opening-night coaches for target season →
   `team_coaches` (uses `leakage_guards.summer_hires_for_target` for off-season hires).
-- `calculate_rookie_projected_pr_25_26.py` — draft-class PR → `rookie_projection`.
+- `calculate_rookie_projected_pr.py` — draft-class PR → `rookie_projection`.
 - `build_composite_clutch_index.py` — 3-year trailing clutch window ending at source
   season → `playoff_riser_choker` keyed to target; FMVP set filtered by
   `leakage_guards.fmvp_names_before_target`.
@@ -309,14 +325,14 @@ This layer runs **before** the pipeline and is not re-invoked per target season.
 9. **`build_player_durability_profiles`** — RS/PO durability from games-played
    history (uses `prior_source_season` + source season GP). **Must run after**
    `calculate_ultimate_playoff_pr` because it reads `ultimate_playoff_pr`.
-10. **`build_projected_team_pr_25_26.py`** — 9-man RS rotation draft + coach/playstyle
+10. **`build_projected_team_pr.py`** — 9-man RS rotation draft + coach/playstyle
     multipliers → `team_projection`.
-11. **`build_team_playoff_pr_25_26.py`** — 8-man PO rotation + amplified coach +
+11. **`build_team_playoff_pr.py`** — 8-man PO rotation + amplified coach +
     **data-derived continuity** → `team_playoff_projection`.
 
 ### 6.4 Continuity (data-derived, not hardcoded)
 
-Continuity multipliers live in `build_team_playoff_pr_25_26.py`:
+Continuity multipliers live in `build_team_playoff_pr.py`:
 
 - **Top-2 gate:** if either of the source season's top-2 PR players appears on a
   *different* team in target `player_starting_teams`, tier = **low** (0.95×).
@@ -328,7 +344,7 @@ Continuity multipliers live in `build_team_playoff_pr_25_26.py`:
   - else → low (0.95×)
 
 Constants: `CONTINUITY_OVERLAP_HIGH = 0.70`, `CONTINUITY_OVERLAP_DEFAULT_MIN = 0.50`
-(`build_team_playoff_pr_25_26.py:49-55`). Legacy hardcoded team lists remain only as
+(`build_team_playoff_pr.py:49-55`). Legacy hardcoded team lists remain only as
 `LEGACY_*` constants for review tooling (`continuity_review_2025_26.py`), not production.
 
 `run_monte_carlo.py` reads RS continuity from `team_projection.continuity_mult` when
@@ -369,7 +385,7 @@ the target season opens:
 | `draft_year_for_target` | Draft year for rookie filtering |
 
 Used by `build_composite_clutch_index.py`, `apply_pedigree_trajectory_boost.py`,
-`fetch_team_coaches_25_26.py`, and verified in `_batch_historical.py`.
+`fetch_team_coaches.py`, and verified in `_batch_historical.py`.
 
 ---
 
@@ -434,7 +450,10 @@ renamed via `migrate_phase1a_schema.py`.
 1. **Raw fetch season lists vs DB coverage:** default `fetch_player_basic.py` loops
    2020-21–2025-26 only, but the DB holds 2017-18+ (see §3). Trust the DB and
    `fetch_player_starting_teams.py` for full span.
-2. **Legacy script filenames:** `_25_26` suffix on several pipeline modules; tables
-   are generic season-keyed names.
+2. **Legacy script filenames — RESOLVED (2026-08):** the `_25_26` suffix was dropped
+   from `build_projected_team_pr.py`, `build_team_playoff_pr.py`,
+   `calculate_rookie_projected_pr.py`, and `fetch_team_coaches.py` via `git mv`; tables
+   were already generic season-keyed names. `continuity_review_2025_26.py` intentionally
+   kept its name pending a separate liveness decision.
 3. **`fetch_player_starting_teams_25_26.py`** still exists as a single-season helper;
    multi-season roster builds use `fetch_player_starting_teams.py` (not in pipeline).

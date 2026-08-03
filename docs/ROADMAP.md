@@ -1,6 +1,6 @@
 # EYEonPAPER — Phased Roadmap
 
-> Updated to reflect **actual** project status (2026-08-03). See `docs/ARCHITECTURE.md`
+> Updated to reflect **actual** project status (2026-08-04). See `docs/ARCHITECTURE.md`
 > for the live technical map and `docs/PROGRESS.md` for the decision log (note: PROGRESS
 > predates Phases 1–3 completion — trust this file and ARCHITECTURE for current phase).
 
@@ -150,6 +150,17 @@ begin until Phase 4 DoD is met.
   markets or ELO-style benchmarks where historical odds exist.
 
 **DoD:** deferred until Phase 4 completes.
+
+---
+
+## Deferred item — Fetch-layer overhaul (not scheduled, no phase assigned)
+
+**Status:** INVESTIGATED and DEFERRED (2026-08-03/04). NBA API dropped the `gs`/`position`
+fields upstream; all formula-relevant columns verified bit-for-bit correct vs a clean
+re-fetch; a real fix spans 13 fetch scripts across player/team/league/coach layers, making
+it a multi-session task that risks the backtest baseline. Deferred until a genuinely new
+season needs fetching. `fetch_player_stats.py` (Script 1) exists as a starting point if
+resumed. Full findings: `docs/progress.md`.
 
 ---
 
