@@ -1,46 +1,105 @@
+# EYEonPAPER — Progress & Decisions
 
-EYEonPAPER — Progress & Decisions
+> **Start here when you come back.** This file is the "you are here" pin: what to do next,
+> the current score, what's decided, and where to find everything else. It gets overwritten
+> as state changes — it holds the *present*, not history (history lives in git and
+> `EXPERIMENTS.md`).
 
-Start here when you come back to the project. This file tells you where things stand, what each document is for, and every decision already made (so you don't re-litigate them).
+Last updated: 2026-08-03
 
-Last updated: 2026-07-06
+---
 
-Where the project stands
-The engine works and produces a full simulation (simulation_results_25_26, 30 teams) for the 2025-26 season, read by the app.py Streamlit dashboard. The raw data layer is clean and covers six seasons (2020-21 → 2025-26), verified with zero nulls in the columns the rating formula reads and zero lost rows in the basic↔advanced join.
-Decision: keep the current engine — do not rebuild from scratch. A full v2 rebuild was considered and rejected; a working engine is an asset worth more than a cleaner blank page. The plan is to clean and extend the existing code.
-Current phase: Phase 0 — cleanup (see docs/ROADMAP.md). The goal right now is only to remove dead and superseded files. No formula changes, no schema changes yet.
-One free win waiting: the 2025-26 season is now complete in the raw tables, so once backtesting exists (Phase 3), the very first thing it can do is score the engine's own 2025-26 prediction against what actually happened.
+## What to do next (read this first)
 
-Document map (what each file is for)
-FileRead it when…README.mdYou want the pitch — what the engine does and why. The CV-facing front doordocs/PROGRESS.md (this file)You're returning to the project and need to reload contextdocs/ARCHITECTURE.mdYou need the technical map — how data flows and which script writes whatdocs/CLEANUP_PLAN.mdYou're doing the cleanup — the keep/delete verdict for every filedocs/ROADMAP.mdYou want the phased plan and what "done" means for each phasedocs/SEASON_REFACTOR.mdYou're starting the multi-season work (Phase 2+) — not before
-Deleted as spent/obsolete: cursor_audit_prompt.md (scaffolding), PIPELINE_MAP.md (redundant with ARCHITECTURE), V2_BLUEPRINT.md (rebuild plan, abandoned).
+You are in **Phase 4 — formula tuning.** Everything before it is done: the engine is
+multi-season, leakage-free, and scored against a baseline. The job now is to make the
+formula *more accurate* — and you can finally measure whether any change helps, because the
+backtest scorecard exists.
 
-Decision log
-Every decision below is settled. Evidence is in docs/CLEANUP_PLAN.md.
+**Immediate next actions:**
+1. Build `FORMULA.md` (the constants cheat-sheet) and `EXPERIMENTS.md` (the change log) — the
+   two tracking files for this phase.
+2. Then start the tuning loop: change one thing → re-run the backtest → log the score effect
+   → keep or revert.
+3. First targets to investigate (see "Current focus" below): the champion prediction (0%
+   top-1) and the seed accuracy gap.
 
-Base Player Rating: keep calculate_player_pr.py, delete calculate_base_pr.py. player_simulation_pr has gp/mpg populated → calculate_player_pr is the current writer. It's also the architecturally correct one: it has no games-played penalty, so it won't double-count availability (injuries are handled separately in the Monte Carlo).
-Riser/choker: keep build_composite_clutch_index.py, delete calculate_playoff_riser_choker.py. The live table's columns match the former.
-Simulator: keep run_monte_carlo.py, delete monte_carlo_season_25_26.py. app.py imports run_monte_carlo; nothing imports the other.
-Player effects: keep init_yearly_player_effects.py, delete init_player_effects.py. The live table is season-keyed, which only the former produces.
-Dead team-rating branch: delete the table team_simulation_pr and its four writers (calculate_team_pr.py, calculate_team_pr_base.py, calculate_projected_team_pr.py, apply_coach_multipliers.py). Nothing on the live path reads that table.
-Orphan table team_coaches: delete. No reader or writer anywhere.
-Delete via git rm, not an archive/ folder. Git history is the archive. Also delete the existing archive/ folder for the same reason. ⚠️ docs/CLEANUP_PLAN.md still says "archive" in places — read that as "delete."
-reset_database.py: retarget. It currently clears the dead team_simulation_pr; point it at the real live tables (or fold into the future orchestrator).
+---
 
+## The number that matters
 
-Phase 0 delete list (the cleanup, in one place)
-Scripts to git rm (8): calculate_base_pr.py, calculate_playoff_riser_choker.py, monte_carlo_season_25_26.py, init_player_effects.py, calculate_team_pr.py, calculate_team_pr_base.py, calculate_projected_team_pr.py, apply_coach_multipliers.py.
-Tables to drop (2, after a DB backup): team_simulation_pr, team_coaches.
-Folder to remove: archive/.
-Before deleting anything: cp nba_data.db nba_data.backup.db. Then verify the engine still runs and reproduces the same 30-row simulation_results_25_26.
+Current backtest, engine vs naive baseline ("predict last season's result"), pooled over the
+full-data seasons (2019-20 → 2024-25, 2018-19 excluded as thin-data):
 
-Next steps (after Phase 0)
+| Metric | Engine | Baseline | Who wins |
+|---|---|---|---|
+| MAE wins (↓) | **8.68** | 8.82 | engine (barely) |
+| Seed ±1 (↑) | 28.3% | 36.1% | baseline |
+| Champion top-1 (↑) | **0%** | 16.7% | baseline |
+| Champion top-4 (↑) | 33.3% | 50.0% | baseline |
+| Brier champion (↓) | 0.0321 | 0.0318 | ~tie |
 
-Phase 1 — make season a column, not a table-name suffix (rename the _25_26 tables). docs/ROADMAP.md + docs/CLEANUP_PLAN.md §4.
-Phase 2 — one --season parameter runs the whole pipeline for any season. docs/SEASON_REFACTOR.md §4.
-Phase 3 — backtesting + first accuracy numbers. docs/SEASON_REFACTOR.md §6.
-Phase 4 — tune the formulas, using the backtest as the scoreboard.
+**Read:** the engine *barely* beats the baseline on win totals and loses on seeds and
+champion. That's the honest starting line — the target is to pull these numbers clearly
+past the baseline. Best single result so far: 2022-23 win MAE, −2.25 vs actual.
 
+Scores are produced by `compute_baseline_scores.py` and `compute_engine_scores.py`
+(tables `baseline_scores`, `engine_scores`).
 
-Housekeeping note
-After Phase 0 is done, do a 5-minute pass on docs/ARCHITECTURE.md to delete the "Dead / orphaned" section — once those files are gone, that part of the map is history.
+---
+
+## Current focus / open questions
+
+- **Champion prediction is the biggest weakness (0% top-1).** Hypothesis: the model
+  over-trusts regular-season strength and under-weights playoff variance / the eye-test
+  effects (clutch, riser/choker, 8-man rotation) that are *supposed* to catch upsets. Test
+  whether those effects actually move the champion metric — if not, they may be miscalibrated.
+- **Seed accuracy below baseline.** Open question: is this a *metric-reading* problem (taking
+  the single most-likely seed from a probability distribution is fuzzy, while "same as last
+  year" is sharp) or a *formula* problem? Check the metric first — it may be a cheap fix.
+- **Run ablation on the eye-test effects** — turn each effect off, re-run the backtest, see
+  which actually improve accuracy vs which are dead weight or harmful.
+
+---
+
+## Decision log (settled — don't re-litigate)
+
+- **Keep the engine, don't rebuild.** A working engine beats a clean blank page.
+- **Base Player Rating: `calculate_player_pr.py`** (no games-played penalty; injuries handled
+  in the Monte Carlo). `calculate_base_pr.py` deleted.
+- **Riser/choker: `build_composite_clutch_index.py`** (superseded `calculate_playoff_riser_choker.py`, deleted).
+- **Simulator: `run_monte_carlo.py`** (superseded `monte_carlo_season_25_26.py`, deleted).
+- **Player effects: `init_yearly_player_effects.py`** (season-keyed).
+- **Continuity is data-derived**, not hardcoded team lists: top-2-kept gate (by prior-season
+  PR; a missing player is assumed kept unless he appears on another team) → then roster
+  overlap ≥70% HIGH / 50–70% DEFAULT / <50% LOW. This deliberately changed the 2025-26
+  baseline (the old hand-typed lists had teams like DET/SAC backwards).
+- **Delete dead code, don't archive** — git history is the archive.
+
+---
+
+## Deferred cleanup tickets (real, but not urgent — don't let them block formula work)
+
+- **Rename the misnamed `_25_26` scripts** (`build_projected_team_pr_25_26.py`,
+  `build_team_playoff_pr_25_26.py`, `calculate_rookie_projected_pr_25_26.py`,
+  `fetch_team_coaches_25_26.py`). They ARE season-parameterized and work for all years — only
+  the names lie. Verify-then-rename; renaming means updating imports, so do it carefully as
+  its own step. *(Planned next with Sonnet.)*
+- **Data-provenance split.** Seasons 2017-18 → 2019-20 were loaded via `heal_pass/` + backfills;
+  the standard `fetch_*` scripts only cover 2020-21 → 2025-26. So a naive data refresh would
+  only touch the newer seasons. Real fix = season-parameterize the fetch scripts. Deferred to
+  post-formula cleanup (dormant during tuning — you won't re-fetch while tuning).
+- **`fetch_player_starting_teams_25_26.py` deleted** (dead code, verified). Deletion staged in
+  git, commit pending.
+
+---
+
+## Document map (which file answers which question)
+
+- **README.md** — what the project is and why (the pitch).
+- **docs/progress.md** (this file) — where I am right now + next action + score + decisions.
+- **docs/FORMULA.md** — the current formula constants/weights (what I can turn). *(to build)*
+- **docs/EXPERIMENTS.md** — log of every formula change → its score effect → kept/reverted. *(to build)*
+- **docs/ARCHITECTURE.md** — how the code/data is wired (the technical map).
+- **docs/ROADMAP.md** — the full phased plan and where each phase stands.
+- **docs/CLEANUP_PLAN.md**, **docs/SEASON_REFACTOR.md** — specs for completed work (historical).

@@ -1,136 +1,155 @@
 # EYEonPAPER — Phased Roadmap
 
-> Step 7. Each phase leaves the repo in a **working state** (the current single-season
-> flow keeps running until it is deliberately replaced). Do phases in order; do not start
-> a phase until the previous "definition of done" is met. No code has been changed yet.
+> Updated to reflect **actual** project status (2026-08-03). See `docs/ARCHITECTURE.md`
+> for the live technical map and `docs/PROGRESS.md` for the decision log (note: PROGRESS
+> predates Phases 1–3 completion — trust this file and ARCHITECTURE for current phase).
 
-Legend: DoD = Definition of Done.
+Each phase was designed to leave the repo in a **working state**. Phases 0–3 are complete;
+**Phase 4 (formula tuning) is the active work.**
+
+**Legend:** DoD = Definition of Done · ✅ DONE · 🔄 CURRENT · ⬜ FUTURE
+
+| Phase | Status | Summary |
+|-------|--------|---------|
+| 0 — Cleanup & safety net | ✅ DONE | Dead scripts/tables removed; `pipeline.py` orchestrator |
+| 1 — Schema consolidation | ✅ DONE | Season-keyed tables; `_25_26` names migrated |
+| 2 — Season parameterization | ✅ DONE | `--season` end-to-end; leakage guards; historical sims |
+| 3 — Backtesting harness | ✅ DONE | Baseline + engine scoring across 7 seasons |
+| 4 — Formula work | 🔄 CURRENT | Tune formulas to beat baseline convincingly |
+| 5 — Stretch (post-formula) | ⬜ FUTURE | UI polish, market comparison |
 
 ---
 
-## Phase 0 — Cleanup & safety net (no behavior change)
+## Phase 0 — Cleanup & safety net ✅ DONE
 
 **Goal:** remove dead weight, capture dependencies, and put a thin orchestrator over the
-**current** single-season flow so nothing breaks and the run order stops living in your head.
+live projection + simulation path so the run order stops living in your head.
 
-**Files touched**
-- Archive (via `git mv` into `archive/`, à la `archive.py`): `monte_carlo_season_25_26.py`,
-  `calculate_playoff_riser_choker.py`, `init_player_effects.py`, `calculate_team_pr.py`,
-  `calculate_team_pr_base.py`, `calculate_projected_team_pr.py`, `apply_coach_multipliers.py`,
-  and the loser of `calculate_base_pr` vs `calculate_player_pr` (decide via
-  `CLEANUP_PLAN.md` H2).
-- Add `requirements.txt` (`SEASON_REFACTOR.md` §5b).
-- Add `pipeline.py` that calls the **existing** scripts in dependency order (no
-  parameterization yet — just `--stage`). Add `docs/` (this audit).
-- Update `reset_database.py` to stop referencing `team_simulation_pr`.
+**What was actually done:** Superseded scripts deleted (`calculate_base_pr.py`,
+`monte_carlo_season_25_26.py`, `calculate_playoff_riser_choker.py`, `init_player_effects.py`,
+and the dead `team_simulation_pr` writers). `pipeline.py` added as the orchestrator
+(initially single-season order; later gained `--season` in Phase 2). `reset_database.py`
+retargeted to live season-keyed tables. `docs/` audit set established.
 
-**DB changes**
-- Drop the orphaned `team_coaches` relic and the dead `team_simulation_pr` **after**
-  confirming no references (queries in `CLEANUP_PLAN.md` §2). Take a `nba_data.db` backup
-  first.
+**DoD (met):** Live path runs through `pipeline.py`; dead scripts and the
+`team_simulation_pr` branch are gone; engine still produces a full 30-team simulation for
+2025-26.
 
-**Risk:** Low. Only dead/duplicate scripts move; the live path is untouched. Main risk is
-archiving the *wrong* one of the two base-PR scripts — mitigate with the H2 query before
-moving.
-
-**DoD:** `python pipeline.py --stage all` reproduces today's `simulation_results_25_26`
-(same 30 rows, champion odds within simulation noise); `pip install -r requirements.txt`
-succeeds in a clean venv; `git status` shows the 8 archived scripts and 0 changes to live
-logic.
+> **Note:** Original plan called for `requirements.txt` and moving scripts into `archive/`;
+> dead scripts were **deleted** (git history is the archive) per `docs/PROGRESS.md`.
+> `archive/` remains for one-off migration scripts only — off the live path.
 
 ---
 
-## Phase 1 — Schema consolidation (season-keyed tables + migration)
+## Phase 1 — Schema consolidation (season-keyed tables) ✅ DONE
 
-**Goal:** make `season` a column, not a table-name suffix; delete/merge per
-`CLEANUP_PLAN.md` §4. Still single-season in behavior.
+**Goal:** make `season` a column, not a table-name suffix; consolidate projection and
+simulation tables for multi-season storage.
 
-**Files touched**
-- One idempotent migration script (`migrations/001_season_key.py`): renames the six
-  `_25_26` tables to season-keyed general tables, adds `season` columns + PKs to
-  `player_experience_pr`, `final_simulation_pr`, `ULTIMATE_PR`, `ultimate_playoff_pr`,
-  `player_positions`, `player_durability_profiles`, and backfills existing rows
-  (`'2025-26'` for target-named tables; `'2024-25'` for source-named projection tables).
-- Update writers/readers to the new table names + `WHERE season = ?` (mechanical):
-  `run_monte_carlo.py`, `app.py`, `build_projected_team_pr*`, `build_team_playoff_pr*`,
-  `calculate_rookie_projected_pr*`, `fetch_team_coaches*`, `fetch_player_starting_teams*`.
-- (Optional) fold `final_simulation_pr` into `build_ultimate_pr` (`CLEANUP_PLAN.md` §4c).
+**What was actually done:** `migrate_phase1a_schema.py` renamed year-suffixed tables to
+generic season-keyed names (`simulation_results`, `team_projection`,
+`team_playoff_projection`, `rookie_projection`, `team_coaches`, `player_starting_teams`).
+Writers and readers updated to `WHERE season = ?`. `simulation_results` gained
+`(team, season, run_id)` primary key.
 
-**DB changes:** 34 → ~30 real tables; all projection/sim tables season-keyed. Reversible
-via backup.
-
-**Risk:** Medium. Rename + PK changes can silently break a `WHERE season` filter or a
-join. Mitigate: run migration on a **copy** of `nba_data.db`, then diff
-`simulation_results` before/after (must match Phase 0 output).
-
-**DoD:** No table name contains `_25_26`; `pipeline.py --stage all` still reproduces the
-baseline sim; a fresh `SELECT DISTINCT season` on every projection table returns the
-expected single season.
+**DoD (met):** No live table name contains `_25_26`; `pipeline.py --stage all` writes to
+season-keyed tables; multiple seasons can coexist in the same table.
 
 ---
 
-## Phase 2 — Season parameterization (target_season end-to-end)
+## Phase 2 — Season parameterization + de-leaking + historical generation ✅ DONE
 
-**Goal:** `pipeline.py --season 2024-25 --stage all` runs the full projection+sim for any
-target season, deriving `source_season = season − 1`.
+**Goal:** `pipeline.py --season <target> --stage all` runs the full projection + simulation
+for any target season, deriving `source_season = target − 1`.
 
-**Files touched**
-- Every projection/feature script: replace `TARGET_SEASON`/`SEASON`/`BASELINE_SEASON`
-  constants and literal `WHERE season = '...'` with function args
-  (`SEASON_REFACTOR.md` §4b). Convert each `main()` to
-  `main(source_season, target_season, dry_run)`.
-- Eliminate the five silent "latest season" assumptions (`SEASON_REFACTOR.md` §4c),
-  especially the `summer_hires` override and hardcoded continuity team sets — gate them
-  behind `target_season == '2025-26'` or derive from data.
-- `pipeline.py` gains `--season`, `--from`, `--dry-run`; threads `dry_run` to every step;
-  adds post-stage row-count assertions.
+**What was actually done:** `season_utils.py` centralizes season parsing; every pipeline
+step accepts `(source_season, target_season)`. `leakage_guards.py` gates Finals-MVP,
+pedigree boosts, and summer coach hires so historical runs use only pre-target knowledge.
+Continuity moved from hardcoded team lists to data-derived rules (top-2 gate + roster
+overlap) in `build_team_playoff_pr_25_26.py`. `_batch_historical.py` batch-generated
+production simulations for **2018-19 → 2025-26** (`run_id='production'`).
 
-**DB changes:** none structural — but the DB now holds multiple seasons of projection/sim
-output side by side (that is the payoff of Phase 1's `season` columns).
+**DoD (met):** `pipeline.py --season 2025-26` reproduces the production baseline;
+`pipeline.py --season 2019-20` (and other historical targets) produces full projection +
+sim without code edits. Leakage spot-checks pass in `_batch_historical.py`.
 
-**Risk:** Medium-High. The `WHERE season` guards are where a wrong season yields an empty
-join and a silently empty table. Mitigate with the post-stage assertions and by first
-re-running `--season 2025-26` and confirming it matches the Phase 1 baseline exactly.
-
-**DoD:** `pipeline.py --season 2025-26` reproduces the baseline; `pipeline.py --season
-2024-25` produces a full, non-empty projection + sim for 2024-25 with no code edits between
-runs; `--dry-run` writes nothing.
+> **Deferred from original spec:** `--dry-run` and per-step row-count assertions were not
+> added to `pipeline.py`; validation lives in batch helpers instead.
 
 ---
 
-## Phase 3 — Backtesting harness + first accuracy report
+## Phase 3 — Backtesting harness + first accuracy report ✅ DONE
 
-**Goal:** demonstrate predictive skill by predicting a known season with the future hidden
-and scoring it — the headline CV feature.
+**Goal:** score engine predictions against actual outcomes with zero leakage — the
+objective function for formula work.
 
-**Files touched**
-- New `backtest.py` (`SEASON_REFACTOR.md` §6c): runs the pipeline in no-leakage/historical
-  mode (`season <= N`, future-knowledge overrides disabled), then scores.
-- New `backtest_results` table (`season, metric, value, run_id, created_at`).
-- `pipeline.py` learns a `backtest` stage; optional `app.py` tab to show the scorecard.
+**What was actually done:** Instead of a monolithic `backtest.py`, scoring split into:
 
-**DB changes:** add `backtest_results`; `simulation_results` gains `run_id`/`created_at`
-(from Phase 1) to separate backtest runs from production.
+- `compute_baseline_scores.py` — naive baseline (prior-season `team_stats` → wins, seeds,
+  playoff berths; champion prob ∝ prior win_pct) → `baseline_scores`
+- `compute_engine_scores.py` — engine output from `simulation_results`
+  (`run_id='production'`) → `engine_scores`, with side-by-side comparison
 
-**Risk:** Medium. The credibility of the whole exercise depends on **zero leakage** —
-audit every input for `season <= N` and confirm summer-hire/continuity overrides are off.
-A leak inflates accuracy and is worse than a lower honest score.
+**Metrics:** MAE wins, seed exact %, seed ±1 %, playoff berth %, champion top-1 %,
+champion top-4 %, Brier (champion). Scored across **2018-19** (partial) +
+**2019-20 → 2024-25** (7 full backtest seasons).
 
-**DoD:** `python backtest.py --target 2024-25` outputs MAE/RMSE on wins, seed accuracy,
-playoff-round hit rate, champion top-k, and champion Brier score
-(`SEASON_REFACTOR.md` §6b), compared against a naive baseline, for at least the 2023-24 and
-2024-25 targets; results persisted and reproducible.
+**DoD (met):** Baseline and engine scores persisted and reproducible; pooled comparison
+printed on every `compute_engine_scores.py` run.
+
+**Headline result (POOLED excl. 2018-19, 7 seasons — run 2026-08-03):**
+
+| Metric | Baseline | Engine | Winner |
+|--------|----------|--------|--------|
+| MAE wins | 8.82 | **8.68** | engine (barely) |
+| Seed exact % | 13.9 | 11.7 | baseline |
+| Champion top-1 % | 16.7 | **0.0** | baseline |
+| Champion top-4 % | 50.0 | 33.3 | baseline |
+
+The engine edges the naive baseline on wins but **does not yet beat it convincingly**;
+champion prediction and seed accuracy are the weakest areas.
 
 ---
 
-## Phase 4 — Formula work (placeholder, out of scope for this plan)
+## Phase 4 — Formula work 🔄 CURRENT
 
-**Goal (future):** revisit the rating formulas themselves — e.g. reconcile the two base-PR
-philosophies (availability-penalized vs pure-rate), tune the coach/playstyle/continuity
-multipliers, and calibrate champion probabilities — **using the Phase 3 backtest as the
-objective function**. No spec here; scope it once backtesting gives you a baseline to beat.
+**Goal:** improve projection and simulation formulas using the Phase 3 scoreboard as the
+objective function — beat the naive baseline **convincingly**, not marginally.
 
-**DoD:** deferred.
+**Current state:** Active tuning phase. Engine wins on pooled MAE (8.68 vs 8.82) but loses
+on seed accuracy and champion metrics; champion top-1 is **0%** across all 7 full seasons.
+
+**Sub-goals (in flight):**
+
+1. **Beat the naive baseline clearly** — widen the MAE-wins gap; improve seed ±1 and
+   playoff berth accuracy, not just tie or barely win one metric.
+2. **Fix champion prediction** — address 0% champion top-1; improve Brier score and
+   top-4 hit rate (likely PO multipliers, continuity, clutch weight, or sim variance).
+3. **Ablation on eye-test effects** — toggle or reweight `player_special_effects`,
+   pedigree boost, clutch index, coach/playstyle/continuity multipliers; measure each
+   change via `compute_engine_scores.py`.
+4. **Experiment logging** — record `(change, pooled metrics, per-season breakdown)` so
+   formula iterations are comparable (table, doc, or lightweight log — TBD).
+
+**DoD:** Pooled engine scores beat baseline on MAE wins **and** at least two of: seed ±1,
+playoff berth %, champion top-1, champion Brier — with no metric regressing by more than
+a agreed tolerance. Champion top-1 must be **> 0%** on the 7-season window.
+
+---
+
+## Phase 5 — Stretch goals ⬜ FUTURE
+
+**Goal:** polish and external validation after formula work stabilizes. Not started; do not
+begin until Phase 4 DoD is met.
+
+**Candidates:**
+
+- **UI polish** — backtest scorecard tab in `app.py`; season selector beyond the fixed
+  2025-26 interactive default; clearer champion/seed visualizations.
+- **Market comparison (stretch)** — compare engine champion probabilities to betting
+  markets or ELO-style benchmarks where historical odds exist.
+
+**DoD:** deferred until Phase 4 completes.
 
 ---
 
@@ -140,3 +159,16 @@ objective function**. No spec here; scope it once backtesting gives you a baseli
 - **P1 before P2:** you can't parameterize a season that's still encoded in a table name.
 - **P2 before P3:** backtesting *is* running the parameterized pipeline with the future hidden.
 - **P3 before P4:** you can't tune formulas without a metric that says whether a change helped.
+- **P4 before P5:** no UI/market work until the engine earns its numbers.
+
+---
+
+## Where to look next
+
+| Need | Document / script |
+|------|-------------------|
+| Technical data flow | `docs/ARCHITECTURE.md` |
+| Run a season | `py pipeline.py --season 2025-26` |
+| Score predictions | `py compute_baseline_scores.py` then `py compute_engine_scores.py` |
+| Batch historical sims | `_batch_historical.py` |
+| Settled design decisions | `docs/PROGRESS.md` (decision log; phase status is this file) |
