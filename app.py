@@ -75,10 +75,14 @@ NAV_ITEMS = [
     "Adjust Variables",
     "Current Formula",
     "Me vs Baseline",
+    "Progress",
     "What If?",
     "AI Bot",
     "Creator",
 ]
+
+# Pre-continuity-fix runs; numbers are not comparable to later logged runs.
+EXCLUDED_RUNS = {1, 2}
  
  
 def inject_css() -> None:
@@ -454,6 +458,49 @@ def load_score_table(table: str) -> dict[str, dict[str, float]]:
     out: dict[str, dict[str, float]] = {}
     for season, metric, value in rows:
         out.setdefault(str(season), {})[str(metric)] = float(value)
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def load_runs() -> list[dict]:
+    """Append-only run log: id, created_at, note — oldest first.
+
+    Empty list when the history tables have not been created yet."""
+    con = _ro_connect()
+    try:
+        rows = con.execute(
+            "SELECT id, created_at, note FROM runs ORDER BY id ASC"
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+    return [
+        {"id": int(r[0]), "created_at": str(r[1]), "note": str(r[2])}
+        for r in rows
+    ]
+
+
+@st.cache_data(show_spinner=False)
+def load_run_scores() -> dict[int, dict[str, dict[str, float]]]:
+    """run_scores as {run_id: {section: {metric: value}}}.
+
+    Empty dict when the table is missing; callers treat absent keys as dashes."""
+    con = _ro_connect()
+    try:
+        rows = con.execute(
+            "SELECT run, season, metric, value FROM run_scores"
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        con.close()
+
+    out: dict[int, dict[str, dict[str, float]]] = {}
+    for run, season, metric, value in rows:
+        out.setdefault(int(run), {}).setdefault(str(season), {})[
+            str(metric)
+        ] = float(value)
     return out
 
 
@@ -1471,6 +1518,332 @@ def view_me_vs_baseline(col_main, col_filters) -> None:
         )
 
 
+_DELTA_GREEN = "#22c55e"
+_DELTA_RED = "#ef4444"
+_DELTA_NEUTRAL = "#ffffff"
+
+
+def _metric_from_run(
+    run_scores: dict[int, dict[str, dict[str, float]]],
+    run_id: int,
+    section: str,
+    metric: str,
+) -> float | None:
+    """Look up one stored score; None when that run/section/metric is absent."""
+    section_map = run_scores.get(run_id)
+    if not section_map:
+        return None
+    metric_map = section_map.get(section)
+    if not metric_map or metric not in metric_map:
+        return None
+    return float(metric_map[metric])
+
+
+def _best_run_id(
+    run_scores: dict[int, dict[str, dict[str, float]]],
+    run_ids: list[int],
+    section: str,
+    metric: str,
+) -> int | None:
+    """Run that wins on `metric` for `section`. Ties → lowest run id.
+
+    Direction comes from LOWER_IS_BETTER (imported from the scorer).
+    Runs in EXCLUDED_RUNS are never chosen as best."""
+    best_id: int | None = None
+    best_val: float | None = None
+    lower = metric in LOWER_IS_BETTER
+    for rid in run_ids:
+        if rid in EXCLUDED_RUNS:
+            continue
+        val = _metric_from_run(run_scores, rid, section, metric)
+        if val is None:
+            continue
+        if best_val is None:
+            best_id, best_val = rid, val
+            continue
+        if lower:
+            better = val < best_val - 1e-12
+        else:
+            better = val > best_val + 1e-12
+        # Strict improvement only; equal values keep the earlier (lower) id.
+        if better:
+            best_id, best_val = rid, val
+    return best_id
+
+
+def _format_signed_delta(metric: str, delta: float) -> str:
+    """Signed delta using the same precision as the metric itself."""
+    body = _format_metric(metric, delta)
+    if delta > 0 and not body.startswith("+") and not body.startswith("-"):
+        return f"+{body}"
+    return body
+
+
+def _delta_verdict(metric: str, current: float, other: float) -> str:
+    """'improved' | 'worsened' | 'unchanged' using scorer direction."""
+    if abs(current - other) < 1e-12:
+        return "unchanged"
+    # Reuse _winner: treat `other` as baseline and `current` as engine.
+    # 'engine' means current is better; 'baseline' means current is worse.
+    w = _winner(metric, other, current)
+    if w == "tie":
+        return "unchanged"
+    return "improved" if w == "engine" else "worsened"
+
+
+def _delta_color(verdict: str) -> str:
+    if verdict == "improved":
+        return _DELTA_GREEN
+    if verdict == "worsened":
+        return _DELTA_RED
+    return _DELTA_NEUTRAL
+
+
+def _fmt_or_dash(metric: str, value: float | None) -> str:
+    if value is None:
+        return "—"
+    return _format_metric(metric, value)
+
+
+def _progress_html_table(
+    rows: list[dict], best_run: int | None
+) -> str:
+    """Black/white grid matching the scorecard; delta cells carry their colour."""
+    best_hdr = f"Best (run {best_run})" if best_run is not None else "Best"
+    headers = [
+        "Metric",
+        "Original",
+        "Current",
+        best_hdr,
+        "Baseline",
+        "vs Original",
+        "vs Best",
+    ]
+    th = "".join(
+        f'<th style="background:#000;color:#fff;border:1px solid #fff;'
+        f'padding:8px 10px;font-weight:900;text-align:center;">{h}</th>'
+        for h in headers
+    )
+    body_parts = []
+    for r in rows:
+        cells = [
+            ("metric", r["metric_label"], "#ffffff"),
+            ("val", r["original"], "#ffffff"),
+            ("val", r["current"], "#ffffff"),
+            ("val", r["best"], "#ffffff"),
+            ("val", r["baseline"], "#ffffff"),
+            ("delta", r["vs_original"], r["vs_original_color"]),
+            ("delta", r["vs_best"], r["vs_best_color"]),
+        ]
+        tds = "".join(
+            f'<td style="background:#000;color:{color};border:1px solid #fff;'
+            f'padding:8px 10px;text-align:center;font-weight:'
+            f'{"700" if kind == "delta" else "400"};">{text}</td>'
+            for kind, text, color in cells
+        )
+        body_parts.append(f"<tr>{tds}</tr>")
+    return (
+        '<table style="width:100%;border-collapse:collapse;'
+        'font-size:1.05rem;margin-bottom:0.75rem;">'
+        f"<thead><tr>{th}</tr></thead>"
+        f'<tbody>{"".join(body_parts)}</tbody></table>'
+    )
+
+
+def view_progress(col_main, col_filters) -> None:
+    """Run-history scorecard: original vs current vs best vs baseline.
+
+    DISPLAY ONLY — reads runs / run_scores / baseline_scores. Nothing is
+    recomputed or written; missing cells render as dashes."""
+    runs = load_runs()
+    run_scores = load_run_scores()
+    baseline = load_score_table("baseline_scores")
+
+    with col_filters:
+        st.markdown('<div class="eop-eyebrow">Direction</div>',
+                    unsafe_allow_html=True)
+        st.markdown("↓ lower is better\n\n↑ higher is better")
+        st.markdown(
+            '<div class="eop-eyebrow" style="margin-top:1.2rem;">Legend</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<span style="color:{_DELTA_GREEN};">green</span> = improved · '
+            f'<span style="color:{_DELTA_RED};">red</span> = worsened · '
+            "white = unchanged",
+            unsafe_allow_html=True,
+        )
+
+    with col_main:
+        st.markdown(
+            '<div class="brand" style="font-size:1.7rem;">Progress</div>'
+            '<div class="brand-sub">How the engine has moved across logged '
+            "runs — original vs current vs best, metric by metric.</div>",
+            unsafe_allow_html=True,
+        )
+
+        if not runs:
+            st.info(
+                "No runs logged yet — run `compute_engine_scores.py --log` "
+                "to start the history."
+            )
+            return
+
+        run_ids = [r["id"] for r in runs]
+        current_id = run_ids[-1]
+        metric_keys = list(METRIC_LABELS.keys())
+        # Default Original = oldest comparable run (excluded ids stay selectable).
+        default_original = next(
+            (i for i in run_ids if i not in EXCLUDED_RUNS),
+            run_ids[0],
+        )
+        default_original_idx = run_ids.index(default_original)
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            section = st.selectbox(
+                "Season / section",
+                options=SCORECARD_SECTIONS,
+                index=SCORECARD_SECTIONS.index("POOLED_NO_1819"),
+                format_func=_scorecard_section_label,
+                key="progress_section",
+                help="Same sections as Me vs Baseline.",
+            )
+        with c2:
+            best_metric = st.selectbox(
+                "Best defined by",
+                options=metric_keys,
+                index=metric_keys.index("mae_wins"),
+                format_func=lambda k: METRIC_LABELS[k],
+                key="progress_best_metric",
+                help="Which metric decides the Best run for this section.",
+            )
+        with c3:
+            original_id = st.selectbox(
+                "Original run",
+                options=run_ids,
+                index=default_original_idx,
+                format_func=lambda i: (
+                    f"run {i} (pre-fix)" if i in EXCLUDED_RUNS else f"run {i}"
+                ),
+                key="progress_original_run",
+                help=(
+                    "Starting point for deltas. Default is the oldest run "
+                    "outside EXCLUDED_RUNS; pre-fix runs stay selectable."
+                ),
+            )
+
+        best_id = _best_run_id(run_scores, run_ids, section, best_metric)
+
+        rows = []
+        vs_orig_counts = {"improved": 0, "worsened": 0, "unchanged": 0}
+        vs_best_counts = {"improved": 0, "worsened": 0, "unchanged": 0}
+
+        for key, label in METRIC_LABELS.items():
+            arrow = "↓" if key in LOWER_IS_BETTER else "↑"
+            orig_v = _metric_from_run(run_scores, original_id, section, key)
+            curr_v = _metric_from_run(run_scores, current_id, section, key)
+            best_v = (
+                _metric_from_run(run_scores, best_id, section, key)
+                if best_id is not None
+                else None
+            )
+            base_v = baseline.get(section, {}).get(key)
+
+            if curr_v is not None and orig_v is not None:
+                d_orig = curr_v - orig_v
+                v_orig = _delta_verdict(key, curr_v, orig_v)
+                vs_orig_counts[v_orig] += 1
+                vs_orig_txt = _format_signed_delta(key, d_orig)
+                vs_orig_color = _delta_color(v_orig)
+            else:
+                vs_orig_txt, vs_orig_color = "—", _DELTA_NEUTRAL
+
+            if curr_v is not None and best_v is not None:
+                d_best = curr_v - best_v
+                v_best = _delta_verdict(key, curr_v, best_v)
+                vs_best_counts[v_best] += 1
+                vs_best_txt = _format_signed_delta(key, d_best)
+                vs_best_color = _delta_color(v_best)
+            else:
+                vs_best_txt, vs_best_color = "—", _DELTA_NEUTRAL
+
+            rows.append(
+                {
+                    "metric_label": f"{label} {arrow}",
+                    "original": _fmt_or_dash(key, orig_v),
+                    "current": _fmt_or_dash(key, curr_v),
+                    "best": _fmt_or_dash(key, best_v),
+                    "baseline": _fmt_or_dash(key, base_v),
+                    "vs_original": vs_orig_txt,
+                    "vs_original_color": vs_orig_color,
+                    "vs_best": vs_best_txt,
+                    "vs_best_color": vs_best_color,
+                }
+            )
+
+        st.markdown(
+            f'<div class="eop-eyebrow">Scorecard · '
+            f'{_scorecard_section_label(section)} · '
+            f'original run {original_id} · current run {current_id}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            _progress_html_table(rows, best_id),
+            unsafe_allow_html=True,
+        )
+
+        def _summary(label: str, counts: dict[str, int]) -> str:
+            return (
+                f"**vs {label}:** {counts['improved']} improved · "
+                f"{counts['worsened']} worsened · "
+                f"{counts['unchanged']} unchanged"
+            )
+
+        st.markdown(_summary("Original", vs_orig_counts))
+        st.markdown(_summary("Best", vs_best_counts))
+        st.caption(
+            "Deltas = current − comparison run. Green means the move is an "
+            "improvement in that metric's direction; red means it is not; "
+            "zero is neutral. Missing scores show as —."
+        )
+
+        # ---- Run list (trajectory) ----
+        st.markdown(
+            f'<div class="eop-eyebrow" style="margin-top:1.6rem;">'
+            f'Run list · {_scorecard_section_label(section)} · '
+            f'{METRIC_LABELS[best_metric]}</div>',
+            unsafe_allow_html=True,
+        )
+        list_rows = []
+        for r in runs:
+            rid = r["id"]
+            marks = []
+            if rid in EXCLUDED_RUNS:
+                marks.append("pre-fix")
+            if rid == current_id:
+                marks.append("current")
+            if best_id is not None and rid == best_id:
+                marks.append("best")
+            val = _metric_from_run(run_scores, rid, section, best_metric)
+            list_rows.append(
+                {
+                    "id": rid,
+                    "date": r["created_at"],
+                    "note": r["note"],
+                    METRIC_LABELS[best_metric]: _fmt_or_dash(
+                        best_metric, val
+                    ),
+                    "mark": " · ".join(marks) if marks else "",
+                }
+            )
+        st.dataframe(
+            style_table(pd.DataFrame(list_rows)),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def view_coming_soon(col_main, col_filters, title: str, blurb: str) -> None:
     with col_filters:
         st.markdown('<div class="eop-eyebrow">Status</div>', unsafe_allow_html=True)
@@ -1554,6 +1927,8 @@ def main() -> None:
         view_current_formula(col_main, col_filters)
     elif nav == "Me vs Baseline":
         view_me_vs_baseline(col_main, col_filters)
+    elif nav == "Progress":
+        view_progress(col_main, col_filters)
     elif nav == "What If?":
         view_coming_soon(col_main, col_filters, "What If?",
                          "Swap players between teams and re-run the season.")
