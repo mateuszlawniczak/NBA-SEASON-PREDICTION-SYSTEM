@@ -95,3 +95,42 @@ POOLED_NO_1819 (vs baseline):
   Champion top-1 %       0.0   baseline 14.3   baseline
   Champion top-4 %      28.6   baseline 42.9   baseline
   Brier (champion)    0.0326   baseline 0.0318   baseline
+
+## Run 2 — 2026-08-16 — eb8588c
+determinism check, no formula change
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              8.57   (prev run 8.57, +0.00)   baseline 8.65   engine
+  MAE win % (scaled)   10.71   (prev run 10.71, +0.00)   baseline 10.99   engine
+  Seed exact %          10.5   (prev run 11.0, -0.5)   baseline 15.2   baseline
+  Seed ±1 %             29.5   (prev run 30.0, -0.5)   baseline 36.2   baseline
+  Playoff berth %       69.5   (prev run 69.5, 0.0)   baseline 69.5   tie
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0324   (prev run 0.0326, -0.0001)   baseline 0.0318   baseline
+
+## Run 3 — 2026-08-16 — eb8588c
+UP-only continuity top-2; determinism run 1
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              8.56   (prev run 8.57, -0.00)   baseline 8.65   engine
+  MAE win % (scaled)   10.71   (prev run 10.71, -0.01)   baseline 10.99   engine
+  Seed exact %          10.5   (prev run 10.5, 0.0)   baseline 15.2   baseline
+  Seed ±1 %             28.6   (prev run 29.5, -1.0)   baseline 36.2   baseline
+  Playoff berth %       69.5   (prev run 69.5, 0.0)   baseline 69.5   tie
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0324   (prev run 0.0324, +0.0000)   baseline 0.0318   baseline
+
+## Run 4 — 2026-08-16 — eb8588c
+UP-only continuity top-2; determinism run 2
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              8.56   (prev run 8.56, 0.00)   baseline 8.65   engine
+  MAE win % (scaled)   10.71   (prev run 10.71, 0.00)   baseline 10.99   engine
+  Seed exact %          10.5   (prev run 10.5, 0.0)   baseline 15.2   baseline
+  Seed ±1 %             28.6   (prev run 28.6, 0.0)   baseline 36.2   baseline
+  Playoff berth %       69.5   (prev run 69.5, 0.0)   baseline 69.5   tie
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0324   (prev run 0.0324, 0.0000)   baseline 0.0318   baseline

@@ -28,6 +28,7 @@ from season_utils import SeasonPair, parse_cli_seasons
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
 DEFAULT_RUN_ID = "production"
+MASTER_SEED = 20260514
 N_SIMULATIONS = 1000
 RS_GAMES_PER_TEAM = 82
 N_TEAMS = 30
@@ -879,6 +880,7 @@ def main(
     source_season: str | None = None,
     target_season: str | None = None,
     run_id: str = DEFAULT_RUN_ID,
+    seed: int = MASTER_SEED,
 ) -> None:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -899,7 +901,7 @@ def main(
     print_depth_validation(profiles, ("SAS", "DET"))
     print(f"\nRegular season length for {target_season}: {rs_games} games per team.")
 
-    rng_master = np.random.default_rng(20260514)
+    rng_master = np.random.default_rng(seed)
     win_sum = np.zeros(N_TEAMS, dtype=np.float64)
     seed_counts = np.zeros((N_TEAMS, 15), dtype=np.int32)
     exit_counts = np.zeros((N_TEAMS, 6), dtype=np.int32)

@@ -7,11 +7,11 @@ draft rules, then coach / playstyle / continuity multipliers.
 Writes ONLY ``team_playoff_projection`` in ``nba_data.db`` (idempotent per season).
 
 Reads:
-  ultimate_playoff_pr, player_starting_teams, coach_system_data,
-  playstyle_multipliers,
+    ultimate_playoff_pr, player_starting_teams, coach_system_data,
+    playstyle_multipliers, ULTIMATE_PR (continuity top-2 ranking),
 
 plus (required to attach coaches and playstyles to teams — not present in the
-four named tables alone):
+named tables alone):
 
   team_coaches, team_playstyle_data (source season).
 """
@@ -95,25 +95,31 @@ def _source_top_two(
     con: sqlite3.Connection,
     team_abbr: str,
     source_season: str,
+    target_season: str,
 ) -> list[tuple[int, str, float]]:
-    """Top-2 players by prior-season PR on ``team_abbr``."""
+    """Top-2 source-roster players by canonical ``ULTIMATE_PR.pr``.
+
+    ``ULTIMATE_PR.season`` is the *target* year: veterans are
+    ``final_simulation_pr`` from the source season (plus target rookies).
+    Ranking the source roster against that table is "last year's two best
+    by the pipeline PR", without mixing ``player_simulation_pr`` or the
+    previous cycle's incomplete ``ULTIMATE_PR`` (which omits that year's
+    rookies). Players with no ``ULTIMATE_PR`` row are excluded, not 0.
+    """
     rows = con.execute(
         """
-        SELECT pst.player_id, pst.player_name,
-               COALESCE(up.pr, psp.base_pr, 0.0) AS pr
+        SELECT pst.player_id, pst.player_name, up.pr AS pr
         FROM player_starting_teams AS pst
-        LEFT JOIN ULTIMATE_PR AS up
+        INNER JOIN ULTIMATE_PR AS up
           ON up.player_name = pst.player_name
          AND up.season = ?
-        LEFT JOIN player_simulation_pr AS psp
-          ON psp.player_name = pst.player_name
-         AND psp.season = ?
         WHERE pst.season = ?
           AND pst.team_abbr = ?
-        ORDER BY pr DESC, pst.player_name ASC
+          AND up.pr IS NOT NULL
+        ORDER BY up.pr DESC, pst.player_name ASC, pst.player_id ASC
         LIMIT 2
         """,
-        (source_season, source_season, source_season, team_abbr),
+        (target_season, source_season, team_abbr),
     ).fetchall()
     return [(int(r[0]), str(r[1]), float(r[2])) for r in rows]
 
@@ -128,6 +134,7 @@ def _target_team_for_player(
         SELECT team_abbr
         FROM player_starting_teams
         WHERE season = ? AND player_id = ?
+        ORDER BY team_abbr ASC, rowid ASC
         LIMIT 1
         """,
         (target_season, player_id),
@@ -226,7 +233,7 @@ def _evaluate_neutral_handling(
     Previous rule: missing target-roster rows were neutral (gate ignored them).
     Only explicit departures triggered LOW; otherwise overlap decided tier.
     """
-    top_two = _source_top_two(con, team_abbr, source_season)
+    top_two = _source_top_two(con, team_abbr, source_season, target_season)
     has_departed = False
     for pid, _name, _pr in top_two:
         target_team = _target_team_for_player(con, pid, target_season)
@@ -248,11 +255,12 @@ def evaluate_continuity(
     """
     Apply top-2 gate then target-season overlap rule.
 
-    Top-2 gate fires only when a source top-2 player appears on a *different*
+    Top-2 is the source roster ranked by target-season ``ULTIMATE_PR.pr``
+    only. The gate fires when one of those players appears on a *different*
     team in the target roster. Players absent from the target roster are
     treated as kept (not penalized); flag them for manual review.
     """
-    top_two = _source_top_two(con, team_abbr, source_season)
+    top_two = _source_top_two(con, team_abbr, source_season, target_season)
     top_two_detail: list[tuple[int, str, float, Top2Status]] = []
     assumed_kept_players: list[dict[str, object]] = []
 
@@ -308,6 +316,7 @@ def _continuity_mult(
 
 REQUIRED_TABLES = (
     "ultimate_playoff_pr",
+    "ULTIMATE_PR",
     "player_starting_teams",
     "coach_system_data",
     "playstyle_multipliers",
