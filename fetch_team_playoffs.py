@@ -29,6 +29,7 @@ Columns not applicable to postseason:
 Anti-bot: random 4.5–8.2 s sleep between every API request.
 """
 
+import argparse
 import sqlite3
 import time
 import random
@@ -526,15 +527,36 @@ def ensure_schema(con: sqlite3.Connection) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-def run() -> None:
+def print_win_loss_table(con: sqlite3.Connection, season: str) -> None:
+    rows = con.execute(
+        """
+        SELECT team_abbr, wins, losses, win_pct
+        FROM team_stats_playoffs
+        WHERE season = ?
+        ORDER BY wins DESC, losses ASC, team_abbr
+        """,
+        (season,),
+    ).fetchall()
+    print(f"\n  Postseason W/L — {season} ({len(rows)} teams):", flush=True)
+    for abbr, wins, losses, win_pct in rows:
+        pct = f"{win_pct:.3f}" if win_pct is not None else "  —  "
+        print(f"    {abbr:<4} {wins:>2}-{losses:<2}  win_pct={pct}", flush=True)
+
+
+def run(seasons: "list[str] | None" = None) -> None:
+    # Default keeps the original behaviour (full SEASONS list); a caller or the
+    # --season flag can narrow it to a single season without touching the rest.
+    seasons = list(seasons) if seasons else list(SEASONS)
+
     print(f"[fetch_team_playoffs] DB: {DB_PATH}", flush=True)
+    print(f"[fetch_team_playoffs] seasons: {', '.join(seasons)}", flush=True)
     con = sqlite3.connect(DB_PATH)
     ensure_schema(con)
     grand_total = 0
 
-    for i, season in enumerate(SEASONS, 1):
+    for i, season in enumerate(seasons, 1):
         print(f"\n{'='*60}", flush=True)
-        print(f"[TEAM POSTSEASON {season}]  ({i}/{len(SEASONS)})", flush=True)
+        print(f"[TEAM POSTSEASON {season}]  ({i}/{len(seasons)})", flush=True)
         print(f"{'='*60}", flush=True)
 
         try:
@@ -562,6 +584,7 @@ def run() -> None:
             n = upsert_season(con, season, merged)
             grand_total += n
             print(f"\n[TEAM POSTSEASON {season}] Inserted {n} teams.", flush=True)
+            print_win_loss_table(con, season)
 
         except Exception as exc:
             print(f"  [ERROR] {season}: {exc}", flush=True)
@@ -570,13 +593,13 @@ def run() -> None:
             con.rollback()
             time.sleep(10)
 
-        if i < len(SEASONS):
+        if i < len(seasons):
             print(f"  [cooldown between seasons: 10s]", flush=True)
             time.sleep(10)
 
     con.close()
     print(f"\n{'='*60}", flush=True)
-    print(f"  DONE — {grand_total} total team records across {len(SEASONS)} seasons.", flush=True)
+    print(f"  DONE — {grand_total} total team records across {len(seasons)} seasons.", flush=True)
     print(f"  Database: {DB_PATH}", flush=True)
 
     # Sanity check
@@ -595,5 +618,20 @@ def run() -> None:
     con2.close()
 
 
+def parse_args(argv: "list[str] | None" = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Fetch team_stats_playoffs from the NBA API."
+    )
+    parser.add_argument(
+        "--season",
+        help=(
+            "Fetch a single season, e.g. 2025-26. Only that season's rows are "
+            "deleted and reinserted. Omit to fetch the full SEASONS list."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    run()
+    args = parse_args()
+    run([args.season] if args.season else None)
