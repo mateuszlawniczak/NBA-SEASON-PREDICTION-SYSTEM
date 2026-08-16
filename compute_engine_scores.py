@@ -6,12 +6,19 @@ actuals using the same metrics and pooling logic as compute_baseline_scores.py.
 
 Read-only on predictions/raw tables; writes only to engine_scores.
 Prints side-by-side comparison vs baseline_scores.
+
+With --note "text" the run is also appended to the permanent history layer
+(runs / run_scores / a snapshot of simulation_results) and to docs/EXPERIMENTS.md.
+History is append-only: nothing there is ever deleted or overwritten, and the
+'production' predictions the dashboard reads are left untouched.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import sqlite3
+import subprocess
 import sys
 from dataclasses import dataclass
 
@@ -32,6 +39,7 @@ from compute_baseline_scores import (
 )
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
+EXPERIMENTS_PATH = os.path.join(os.path.dirname(__file__), "docs", "EXPERIMENTS.md")
 RUN_ID = "production"
 
 CREATE_TABLE_SQL = """
@@ -42,6 +50,45 @@ CREATE TABLE IF NOT EXISTS engine_scores (
     notes   TEXT,
     PRIMARY KEY (season, metric)
 );
+"""
+
+# Append-only history. Nothing here is ever deleted or updated: each logged run
+# adds one `runs` row, its full score set, and a frozen copy of the predictions.
+CREATE_HISTORY_SQL = """
+CREATE TABLE IF NOT EXISTS runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at  TEXT NOT NULL,
+    note        TEXT NOT NULL,
+    seasons     TEXT NOT NULL,
+    git_commit  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS run_scores (
+    run     INTEGER NOT NULL,
+    season  TEXT NOT NULL,
+    metric  TEXT NOT NULL,
+    value   REAL NOT NULL,
+    PRIMARY KEY (run, season, metric)
+);
+
+CREATE VIEW IF NOT EXISTS run_vs_baseline AS
+SELECT
+    rs.run                  AS run,
+    rs.season               AS season,
+    rs.metric               AS metric,
+    rs.value                AS engine_value,
+    bs.value                AS baseline_value,
+    rs.value - bs.value     AS diff,
+    CASE
+        WHEN ABS(rs.value - bs.value) < 1e-9 THEN 'tie'
+        WHEN rs.metric IN ('mae_wins', 'mae_win_pct', 'brier_champion')
+            THEN CASE WHEN rs.value < bs.value THEN 'engine' ELSE 'baseline' END
+        ELSE CASE WHEN rs.value > bs.value THEN 'engine' ELSE 'baseline' END
+    END                     AS winner
+FROM run_scores rs
+JOIN baseline_scores bs
+  ON bs.season = rs.season
+ AND bs.metric = rs.metric;
 """
 
 SEED_COLS = [f"seed_{i}_pct" for i in range(1, 16)]
@@ -274,6 +321,218 @@ def write_engine_scores(rows: list[tuple[str, str, float, str]]) -> None:
         con.close()
 
 
+def _git_commit_short() -> str | None:
+    """Short HEAD hash, or None when git is unavailable. Never fatal."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _seasons_label() -> str:
+    """e.g. '2018-19..2025-26 (8)' — the seasons this run scored."""
+    return f"{ALL_SEASONS[0]}..{ALL_SEASONS[-1]} ({len(ALL_SEASONS)})"
+
+
+def _expected_score_rows() -> int:
+    """Every scored section times every metric; 10 x 8 = 80 today."""
+    return (len(ALL_SEASONS) + 2) * len(METRIC_LABELS)
+
+
+def _snapshot_predictions(con: sqlite3.Connection, run: int) -> int:
+    """Freeze the production predictions under run_id=str(run).
+
+    The 'production' rows are copied, never moved: app.py keeps reading them.
+    """
+    tag = str(run)
+    clash = con.execute(
+        "SELECT COUNT(1) FROM simulation_results WHERE run_id = ?", (tag,)
+    ).fetchone()[0]
+    if clash:
+        raise RuntimeError(
+            f"simulation_results already has {clash} row(s) at run_id={tag!r}; "
+            "refusing to overwrite a previous snapshot."
+        )
+
+    cols = [r[1] for r in con.execute("PRAGMA table_info(simulation_results)")]
+    if "run_id" not in cols:
+        raise RuntimeError("simulation_results has no run_id column.")
+    selected = ", ".join("?" if c == "run_id" else c for c in cols)
+    con.execute(
+        f"INSERT INTO simulation_results ({', '.join(cols)}) "
+        f"SELECT {selected} FROM simulation_results WHERE run_id = ?",
+        (tag, RUN_ID),
+    )
+
+    copied = con.execute(
+        "SELECT COUNT(1) FROM simulation_results WHERE run_id = ?", (tag,)
+    ).fetchone()[0]
+    source = con.execute(
+        "SELECT COUNT(1) FROM simulation_results WHERE run_id = ?", (RUN_ID,)
+    ).fetchone()[0]
+    if copied != source:
+        raise RuntimeError(
+            f"snapshot copied {copied} row(s) but production has {source}."
+        )
+    return copied
+
+
+def _previous_run_scores(
+    con: sqlite3.Connection, run: int, section: str
+) -> dict[str, float] | None:
+    """Scores from the highest run id below `run`, or None if this is the first."""
+    prev = con.execute(
+        "SELECT MAX(run) FROM run_scores WHERE run < ?", (run,)
+    ).fetchone()[0]
+    if prev is None:
+        return None
+    rows = con.execute(
+        "SELECT metric, value FROM run_scores WHERE run = ? AND season = ?",
+        (prev, section),
+    ).fetchall()
+    return {m: float(v) for m, v in rows} or None
+
+
+def _format_experiment_entry(
+    run: int,
+    date: str,
+    commit: str | None,
+    note: str,
+    engine: dict[str, float],
+    baseline: dict[str, float],
+    previous: dict[str, float] | None,
+    section: str = "POOLED_NO_1819",
+) -> str:
+    header = f"## Run {run} — {date}"
+    if commit:
+        header += f" — {commit}"
+
+    lines = [header, note.strip(), "", f"{section} (vs baseline):"]
+    for key, label in METRIC_LABELS.items():
+        if key not in engine:
+            continue
+        value = _format_metric(key, engine[key])
+        parts = [f"  {label:<18}{value:>8}"]
+        if previous and key in previous:
+            delta = engine[key] - previous[key]
+            parts.append(
+                f"   (prev run {_format_metric(key, previous[key])}, "
+                f"{'+' if delta > 0 else ''}{_format_metric(key, delta)})"
+            )
+        if key in baseline:
+            parts.append(f"   baseline {_format_metric(key, baseline[key])}")
+            parts.append(f"   {_winner(key, baseline[key], engine[key])}")
+        lines.append("".join(parts))
+    return "\n".join(lines) + "\n"
+
+
+def _append_experiments(entry: str) -> None:
+    """Append one entry, leaving a blank line between it and whatever came
+    before. Existing content is never read back in, rewritten or reordered."""
+    with open(EXPERIMENTS_PATH, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        tail = b""
+        if handle.tell():
+            handle.seek(max(0, handle.tell() - 2))
+            tail = handle.read()
+    separator = "" if tail.endswith(b"\n\n") else "\n" if tail.endswith(b"\n") else "\n\n"
+    with open(EXPERIMENTS_PATH, "a", encoding="utf-8", newline="\n") as handle:
+        handle.write(separator + entry)
+
+
+def log_run(note: str, rows: list[tuple[str, str, float, str]]) -> int:
+    """Append one run to the history, or leave everything untouched.
+
+    The markdown entry is written before the commit so that a failure anywhere
+    rolls back both the database and the file.
+    """
+    expected = _expected_score_rows()
+    if len(rows) != expected:
+        raise RuntimeError(
+            f"expected {expected} score values ({len(ALL_SEASONS) + 2} sections "
+            f"x {len(METRIC_LABELS)} metrics) but got {len(rows)}; refusing to log."
+        )
+
+    doc_size = os.path.getsize(EXPERIMENTS_PATH)
+    con = sqlite3.connect(DB_PATH, isolation_level=None)
+    appended = False
+    try:
+        con.executescript(CREATE_HISTORY_SQL)
+
+        con.execute("BEGIN IMMEDIATE")
+        cursor = con.execute(
+            "INSERT INTO runs (created_at, note, seasons, git_commit) "
+            "VALUES (datetime('now'), ?, ?, ?)",
+            (note.strip(), _seasons_label(), _git_commit_short()),
+        )
+        run = int(cursor.lastrowid)
+
+        con.executemany(
+            "INSERT INTO run_scores (run, season, metric, value) VALUES (?, ?, ?, ?)",
+            [(run, season, metric, value) for season, metric, value, _ in rows],
+        )
+        written = con.execute(
+            "SELECT COUNT(1) FROM run_scores WHERE run = ?", (run,)
+        ).fetchone()[0]
+        if written != expected:
+            raise RuntimeError(f"wrote {written} run_scores rows, expected {expected}.")
+
+        snapshot = _snapshot_predictions(con, run)
+
+        created_at, commit = con.execute(
+            "SELECT created_at, git_commit FROM runs WHERE id = ?", (run,)
+        ).fetchone()
+        section = "POOLED_NO_1819"
+        engine_section = {
+            metric: value for season, metric, value, _ in rows if season == section
+        }
+        baseline_section = {
+            metric: float(value)
+            for metric, value in con.execute(
+                "SELECT metric, value FROM baseline_scores WHERE season = ?", (section,)
+            ).fetchall()
+        }
+        entry = _format_experiment_entry(
+            run=run,
+            date=str(created_at).split(" ")[0],
+            commit=commit,
+            note=note,
+            engine=engine_section,
+            baseline=baseline_section,
+            previous=_previous_run_scores(con, run, section),
+            section=section,
+        )
+        _append_experiments(entry)
+        appended = True
+
+        con.execute("COMMIT")
+    except Exception:
+        if con.in_transaction:
+            con.execute("ROLLBACK")
+        if appended:
+            with open(EXPERIMENTS_PATH, "r+b") as handle:
+                handle.truncate(doc_size)
+        raise
+    finally:
+        con.close()
+
+    print(
+        f"\nLogged run {run}: {expected} score values, "
+        f"{snapshot} prediction rows frozen at run_id='{run}', "
+        f"entry appended to {os.path.relpath(EXPERIMENTS_PATH, os.path.dirname(DB_PATH))}."
+    )
+    return run
+
+
 def load_scores(con: sqlite3.Connection, table: str) -> dict[str, dict[str, float]]:
     rows = con.execute(
         f"SELECT season, metric, value FROM {table} ORDER BY season, metric"
@@ -352,7 +611,7 @@ def print_comparison(
         print(f"  {METRIC_LABELS[key]:<22} {direction}")
 
 
-def main() -> None:
+def main(note: str | None = None) -> None:
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -414,6 +673,37 @@ def main() -> None:
     print_comparison(baseline_scores, engine_scores, sections)
     print(f"Wrote {len(rows)} rows to engine_scores in {DB_PATH}")
 
+    if note is not None:
+        log_run(note, rows)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Score engine predictions against actuals and the naive baseline."
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--note",
+        help=(
+            "Describe what changed and log this run to the permanent history "
+            "(runs / run_scores / a frozen prediction snapshot / EXPERIMENTS.md)."
+        ),
+    )
+    group.add_argument(
+        "--no-log",
+        action="store_true",
+        help="Score and print only, writing no history record. This is the default.",
+    )
+    return parser.parse_args(argv)
+
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    if args.note is not None and not args.note.strip():
+        print(
+            "[error] --note cannot be empty. Describe what changed, or omit "
+            "--note to score without logging.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    main(note=args.note)

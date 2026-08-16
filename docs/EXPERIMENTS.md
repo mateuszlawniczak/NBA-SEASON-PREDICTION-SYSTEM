@@ -82,3 +82,16 @@ Goal for Phase 4: pull MAE clearly below 8.82, and get champion top-4 above the 
 ## Experiments
 
 <!-- Add each new experiment below, newest at the bottom. Copy the template above. -->
+
+## Run 1 — 2026-08-16 — d358a2a
+original formula, pre-tuning baseline
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              8.57   baseline 8.65   engine
+  MAE win % (scaled)   10.71   baseline 10.99   engine
+  Seed exact %          11.0   baseline 15.2   baseline
+  Seed ±1 %             30.0   baseline 36.2   baseline
+  Playoff berth %       69.5   baseline 69.5   tie
+  Champion top-1 %       0.0   baseline 14.3   baseline
+  Champion top-4 %      28.6   baseline 42.9   baseline
+  Brier (champion)    0.0326   baseline 0.0318   baseline
