@@ -21,10 +21,14 @@ Merge logic for teams appearing in BOTH season types:
   pace                 : GP-weighted average
   win_pct              : re-derived from W / (W + L)
 
-Columns not applicable to postseason:
-  conference_seed      : NULL
+Columns this script owns:
   made_playoffs        : 1  (all teams here are in the postseason)
-  prev_season / prev_seed / prev_playoff_result : NULL
+
+Columns this script never writes — owned by backfill_prev_team_playoffs.py and
+backfill_playoff_result_legacy.py, and preserved across re-fetches by the
+ON CONFLICT upsert:
+  conference, conference_seed, playoff_result,
+  prev_season, prev_seed, prev_playoff_result
 
 Anti-bot: random 4.5–8.2 s sleep between every API request.
 """
@@ -410,62 +414,30 @@ def merge_season_types(playoffs: dict, playin: dict) -> dict:
 # DB upsert
 # ---------------------------------------------------------------------------
 
-UPSERT_SQL = """
-INSERT INTO team_stats_playoffs (
-    season, team_id, team_name, team_abbr,
-    pts_per_game, opp_pts_per_game,
-    off_rating, def_rating, net_rating,
-    adj_off_rating, adj_def_rating, adj_net_rating,
-    pace,
-    wins, losses, win_pct,
-    conference_seed, made_playoffs,
-    prev_season, prev_seed, prev_playoff_result
-) VALUES (
-    :season, :team_id, :team_name, :team_abbr,
-    :pts_per_game, :opp_pts_per_game,
-    :off_rating, :def_rating, :net_rating,
-    :adj_off_rating, :adj_def_rating, :adj_net_rating,
-    :pace,
-    :wins, :losses, :win_pct,
-    :conference_seed, :made_playoffs,
-    :prev_season, :prev_seed, :prev_playoff_result
+# Columns this fetcher actually derives from the API. Anything outside this set
+# (conference, conference_seed, playoff_result, prev_*) is owned by other scripts
+# and must survive a re-fetch untouched, so it is never written here.
+PRODUCED_COLUMNS = (
+    "season", "team_id", "team_name", "team_abbr",
+    "pts_per_game", "opp_pts_per_game",
+    "off_rating", "def_rating", "net_rating",
+    "adj_off_rating", "adj_def_rating", "adj_net_rating", "pace",
+    "wins", "losses", "win_pct",
+    "made_playoffs",
 )
-ON CONFLICT (season, team_id) DO UPDATE SET
-    team_name           = excluded.team_name,
-    team_abbr           = excluded.team_abbr,
-    pts_per_game        = excluded.pts_per_game,
-    opp_pts_per_game    = excluded.opp_pts_per_game,
-    off_rating          = excluded.off_rating,
-    def_rating          = excluded.def_rating,
-    net_rating          = excluded.net_rating,
-    adj_off_rating      = excluded.adj_off_rating,
-    adj_def_rating      = excluded.adj_def_rating,
-    adj_net_rating      = excluded.adj_net_rating,
-    pace                = excluded.pace,
-    wins                = excluded.wins,
-    losses              = excluded.losses,
-    win_pct             = excluded.win_pct,
-    conference_seed     = excluded.conference_seed,
-    made_playoffs       = excluded.made_playoffs
-"""
+
+# Part of the natural key, so never in the SET clause of the upsert.
+KEY_COLUMNS = ("season", "team_id")
 
 
 def upsert_season(con: sqlite3.Connection, season: str, merged: dict) -> int:
     # Schema-aware write: the live team_stats_playoffs table may have drifted from
     # this script's DDL (e.g. migrations dropped made_playoffs/prev_season and added
-    # playoff_result/conference). Insert only the intersection of columns this fetcher
+    # playoff_result/conference). Write only the intersection of columns this fetcher
     # produces and columns that actually exist, so a raw re-fetch stays compatible.
     live_cols = [r[1] for r in con.execute("PRAGMA table_info(team_stats_playoffs)")]
-    produced = {
-        "season", "team_id", "team_name", "team_abbr",
-        "pts_per_game", "opp_pts_per_game",
-        "off_rating", "def_rating", "net_rating",
-        "adj_off_rating", "adj_def_rating", "adj_net_rating", "pace",
-        "wins", "losses", "win_pct",
-        "conference_seed", "made_playoffs",
-        "prev_season", "prev_seed", "prev_playoff_result",
-    }
-    write_cols = [c for c in live_cols if c in produced]
+    write_cols = [c for c in live_cols if c in PRODUCED_COLUMNS]
+    update_cols = [c for c in write_cols if c not in KEY_COLUMNS]
 
     rows = []
     for tid, rec in merged.items():
@@ -490,24 +462,56 @@ def upsert_season(con: sqlite3.Connection, season: str, merged: dict) -> int:
             "losses":  rec.get("losses"),
             "win_pct": rec.get("win_pct"),
 
-            "conference_seed":     None,
-            "made_playoffs":       1,
-            "prev_season":         None,
-            "prev_seed":           None,
-            "prev_playoff_result": None,
+            "made_playoffs": 1,
         }
         rows.append({c: full.get(c) for c in write_cols})
 
     col_list     = ", ".join(write_cols)
     placeholders = ", ".join(f":{c}" for c in write_cols)
-    sql = f"INSERT INTO team_stats_playoffs ({col_list}) VALUES ({placeholders})"
+    assignments  = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
+    sql = (
+        f"INSERT INTO team_stats_playoffs ({col_list}) VALUES ({placeholders}) "
+        f"ON CONFLICT (season, team_id) DO UPDATE SET {assignments}"
+    )
 
     cur = con.cursor()
-    # Additive + idempotent for THIS season only; never touches other seasons.
-    cur.execute("DELETE FROM team_stats_playoffs WHERE season = ?", (season,))
+    # Upsert, never delete-and-replace: derived columns owned by other scripts
+    # (conference, conference_seed, playoff_result, prev_*) stay on the row.
     cur.executemany(sql, rows)
+    prune_stale_rows(con, season, set(merged))
     con.commit()
     return len(rows)
+
+
+def prune_stale_rows(con: sqlite3.Connection, season: str, fetched_ids: set) -> int:
+    """Drop rows for this season only whose team is absent from the fresh fetch.
+
+    Catches a team that appeared in a partial in-progress snapshot but is not in
+    the final postseason field. Every removal is printed — never silent.
+    """
+    stale = [
+        row
+        for row in con.execute(
+            "SELECT team_id, team_abbr, wins, losses, playoff_result "
+            "FROM team_stats_playoffs WHERE season = ?",
+            (season,),
+        ).fetchall()
+        if row[0] not in fetched_ids
+    ]
+    if not stale:
+        return 0
+
+    print(f"\n  [prune] {len(stale)} stale row(s) in {season} not in the fresh fetch:", flush=True)
+    for team_id, abbr, wins, losses, result in stale:
+        print(
+            f"    removing {abbr} (team_id={team_id}) {wins}-{losses} {result!r}",
+            flush=True,
+        )
+        con.execute(
+            "DELETE FROM team_stats_playoffs WHERE season = ? AND team_id = ?",
+            (season, team_id),
+        )
+    return len(stale)
 
 
 # ---------------------------------------------------------------------------

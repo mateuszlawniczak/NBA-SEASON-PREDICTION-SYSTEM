@@ -22,9 +22,15 @@ Phase 2 — API (season 2020-21 only):
   Teams that played in the 2019-20 bubble playoffs get their round label;
   teams absent from that data get "Missed Playoffs".
 
+Hydrate — DB only, one season (--season):
+  Rebuilds every column fetch_team_playoffs.py does not produce: conference,
+  conference_seed and prev_*. Used after a re-fetch to restore the derived
+  columns before playoff_result is calculated from them.
+
 Anti-bot: random 4.5–8.2 s sleep between API requests.
 """
 
+import argparse
 import os
 import sys
 import math
@@ -46,6 +52,44 @@ SEASON_PREV_MAP = {
     "2023-24": "2022-23",
     "2024-25": "2023-24",
     "2025-26": "2024-25",
+}
+
+MISSED_PLAYOFFS = "Missed Playoffs"
+
+# Static East/West map, keyed by the immutable NBA team_id. Defined locally so
+# the hydrate step has no dependency on run_monte_carlo.py; verified to agree
+# with every non-NULL conference already stored in team_stats_playoffs.
+CONFERENCE_BY_TEAM_ID = {
+    1610612737: "East",  # ATL
+    1610612738: "East",  # BOS
+    1610612739: "East",  # CLE
+    1610612741: "East",  # CHI
+    1610612748: "East",  # MIA
+    1610612749: "East",  # MIL
+    1610612751: "East",  # BKN
+    1610612752: "East",  # NYK
+    1610612753: "East",  # ORL
+    1610612754: "East",  # IND
+    1610612755: "East",  # PHI
+    1610612761: "East",  # TOR
+    1610612764: "East",  # WAS
+    1610612765: "East",  # DET
+    1610612766: "East",  # CHA
+    1610612740: "West",  # NOP
+    1610612742: "West",  # DAL
+    1610612743: "West",  # DEN
+    1610612744: "West",  # GSW
+    1610612745: "West",  # HOU
+    1610612746: "West",  # LAC
+    1610612747: "West",  # LAL
+    1610612750: "West",  # MIN
+    1610612756: "West",  # PHX
+    1610612757: "West",  # POR
+    1610612758: "West",  # SAC
+    1610612759: "West",  # SAS
+    1610612760: "West",  # OKC
+    1610612762: "West",  # UTA
+    1610612763: "West",  # MEM
 }
 
 
@@ -75,6 +119,121 @@ def wins_to_result(wins: "int | None") -> str:
     if wins >= 8:  return "Conf. Finals"
     if wins >= 4:  return "Conf. Semifinals"
     return "1st Round"
+
+
+# ---------------------------------------------------------------------------
+# Hydrate — rebuild the derived columns for one season
+# ---------------------------------------------------------------------------
+
+def previous_season(season: str) -> str:
+    """'2025-26' -> '2024-25'."""
+    start = int(season.split("-")[0])
+    return f"{start - 1}-{str(start)[-2:]}"
+
+
+def _column_map(con: sqlite3.Connection, sql: str, params: tuple) -> dict:
+    return {row[0]: row[1] for row in con.execute(sql, params).fetchall()}
+
+
+def hydrate_season(con: sqlite3.Connection, season: str) -> int:
+    """Refill the columns fetch_team_playoffs.py does not produce, for one season.
+
+    conference          <- CONFERENCE_BY_TEAM_ID
+    conference_seed     <- team_stats.conference_seed for the same season
+    prev_seed           <- team_stats.conference_seed for the previous season
+    prev_playoff_result <- the previous season's playoff_result, else Missed Playoffs
+
+    Values are recomputed rather than only NULL-filled, so the step is
+    idempotent and self-heals a season whose derived columns were damaged.
+    Only `season` is touched.
+    """
+    rows = con.execute(
+        "SELECT team_id, team_abbr, conference, conference_seed, prev_seed, "
+        "prev_playoff_result FROM team_stats_playoffs WHERE season = ? "
+        "ORDER BY team_abbr",
+        (season,),
+    ).fetchall()
+    if not rows:
+        print(f"  [hydrate] No team_stats_playoffs rows for {season}.", flush=True)
+        return 0
+
+    prev = previous_season(season)
+    seeds = _column_map(
+        con,
+        "SELECT team_id, conference_seed FROM team_stats WHERE season = ?",
+        (season,),
+    )
+    prev_seeds = _column_map(
+        con,
+        "SELECT team_id, conference_seed FROM team_stats WHERE season = ?",
+        (prev,),
+    )
+    prev_results = _column_map(
+        con,
+        "SELECT team_id, playoff_result FROM team_stats_playoffs WHERE season = ?",
+        (prev,),
+    )
+
+    print(f"  [hydrate] {season} — {len(rows)} rows, previous season {prev}", flush=True)
+    if not seeds:
+        print(
+            f"    [warn] team_stats has no {season} rows; conference_seed cannot be filled.",
+            flush=True,
+        )
+    if not prev_seeds:
+        print(
+            f"    [warn] team_stats has no {prev} rows; prev_seed left as-is "
+            f"(run the API phase for that season instead).",
+            flush=True,
+        )
+    if not prev_results:
+        print(
+            f"    [warn] team_stats_playoffs has no {prev} rows; "
+            f"prev_playoff_result left as-is.",
+            flush=True,
+        )
+
+    changed = 0
+    for team_id, abbr, conference, seed, prev_seed, prev_result in rows:
+        new_values: dict[str, object] = {
+            "conference": CONFERENCE_BY_TEAM_ID.get(team_id, conference),
+        }
+        if seeds:
+            new_values["conference_seed"] = seeds.get(team_id)
+            if team_id not in seeds:
+                print(
+                    f"    [warn] {abbr} has no team_stats row for {season}; "
+                    f"conference_seed stays NULL.",
+                    flush=True,
+                )
+        if prev_seeds:
+            new_values["prev_seed"] = prev_seeds.get(team_id)
+        if prev_results:
+            new_values["prev_playoff_result"] = prev_results.get(team_id, MISSED_PLAYOFFS)
+
+        current = {
+            "conference": conference,
+            "conference_seed": seed,
+            "prev_seed": prev_seed,
+            "prev_playoff_result": prev_result,
+        }
+        diffs = {c: v for c, v in new_values.items() if current[c] != v}
+        if not diffs:
+            continue
+
+        assignments = ", ".join(f"{c} = ?" for c in diffs)
+        con.execute(
+            f"UPDATE team_stats_playoffs SET {assignments} "
+            f"WHERE season = ? AND team_id = ?",
+            (*diffs.values(), season, team_id),
+        )
+        changed += 1
+        detail = ", ".join(f"{c}: {current[c]!r} -> {v!r}" for c, v in diffs.items())
+        print(f"    {abbr:<4} {detail}", flush=True)
+
+    con.commit()
+    print(f"  [hydrate] {season}: {changed} row(s) changed.", flush=True)
+    return changed
 
 
 # ---------------------------------------------------------------------------
@@ -268,5 +427,25 @@ def main() -> None:
     print("\n  DONE.", flush=True)
 
 
+def parse_args(argv: "list[str] | None" = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Fill the derived columns of team_stats_playoffs."
+    )
+    parser.add_argument(
+        "--season",
+        help=(
+            "Hydrate conference, conference_seed and prev_* for a single season "
+            "(no API calls). Omit to run the original two-phase backfill."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    if args.season:
+        connection = sqlite3.connect(DB_PATH)
+        hydrate_season(connection, args.season)
+        connection.close()
+    else:
+        main()
