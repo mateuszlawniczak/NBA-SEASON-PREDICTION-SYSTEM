@@ -1378,7 +1378,7 @@ def _scorecard_section_label(section: str) -> str:
     if section == "POOLED":
         return "All seasons (2018-19 →)"
     if section == "POOLED_NO_1819":
-        return "Backtest average (6 seasons)"
+        return f"Backtest average ({len(BACKTEST_SEASONS)} seasons)"
     return _season_display(section)
 
 
