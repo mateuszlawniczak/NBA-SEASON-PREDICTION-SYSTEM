@@ -23,6 +23,7 @@ from compute_baseline_scores import (
     PARTIAL_SEASON,
     SeasonMetrics,
     _fetch_champion_abbr,
+    _fetch_games_played,
     _fetch_team_stats,
     _metrics_to_rows,
     _top_k_by_prob,
@@ -44,7 +45,7 @@ CREATE TABLE IF NOT EXISTS engine_scores (
 """
 
 SEED_COLS = [f"seed_{i}_pct" for i in range(1, 16)]
-LOWER_IS_BETTER = {"mae_wins", "brier_champion"}
+LOWER_IS_BETTER = {"mae_wins", "mae_win_pct", "brier_champion"}
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,12 @@ def _fetch_engine_predictions(
     return out
 
 
+def _games_simulated(con: sqlite3.Connection, season: str) -> int:
+    """Games per team the simulation played — mirrors the rounding that
+    run_monte_carlo.season_games_per_team applies when it sizes the schedule."""
+    return int(round(_fetch_games_played(con, season)))
+
+
 def _predicted_seed(seed_pcts: tuple[float, ...]) -> int | None:
     if not seed_pcts:
         return None
@@ -117,7 +124,13 @@ def compute_season_metrics(
     if not common_abbrs:
         return None
 
+    # run_monte_carlo plays each season's real number of games, so avg_wins is
+    # already on the target season's scale — rescaling here would shrink it a
+    # second time. games_simulated is only the win-rate denominator.
+    games_simulated = _games_simulated(con, target_season)
+
     win_errors: list[float] = []
+    win_pct_errors: list[float] = []
     seed_exact = 0
     seed_pm1 = 0
     playoff_hits = 0
@@ -127,6 +140,9 @@ def compute_season_metrics(
         pred = preds[abbr]
         act = actual_by_abbr[abbr]
         win_errors.append(abs(pred.avg_wins - act.wins))
+        win_pct_errors.append(
+            abs(pred.avg_wins / games_simulated - act.win_pct) * 100.0
+        )
 
         pred_seed = _predicted_seed(pred.seed_pcts)
         if pred_seed is not None and act.conference_seed is not None:
@@ -163,6 +179,7 @@ def compute_season_metrics(
     n = len(common_abbrs)
     return SeasonMetrics(
         mae_wins=sum(win_errors) / n,
+        mae_win_pct=sum(win_pct_errors) / n,
         seed_accuracy_exact=(100.0 * seed_exact / seed_scored) if seed_scored else 0.0,
         seed_accuracy_pm1=(100.0 * seed_pm1 / seed_scored) if seed_scored else 0.0,
         playoff_berth_accuracy=100.0 * playoff_hits / n,
@@ -178,6 +195,7 @@ def compute_pooled(
 ) -> SeasonMetrics:
     """Micro-average for continuous metrics; macro % for champion hits."""
     total_abs_error = 0.0
+    total_abs_pct_error = 0.0
     total_teams = 0
     seed_exact = 0
     seed_pm1 = 0
@@ -193,11 +211,15 @@ def compute_pooled(
         actual_by_id = _fetch_team_stats(con, target)
         actual_by_abbr = {row.team_abbr: row for row in actual_by_id.values()}
         common_abbrs = sorted(set(preds) & set(actual_by_abbr))
+        games_simulated = _games_simulated(con, target)
 
         for abbr in common_abbrs:
             pred = preds[abbr]
             act = actual_by_abbr[abbr]
             total_abs_error += abs(pred.avg_wins - act.wins)
+            total_abs_pct_error += (
+                abs(pred.avg_wins / games_simulated - act.win_pct) * 100.0
+            )
 
             pred_seed = _predicted_seed(pred.seed_pcts)
             if pred_seed is not None and act.conference_seed is not None:
@@ -221,6 +243,7 @@ def compute_pooled(
 
     return SeasonMetrics(
         mae_wins=total_abs_error / total_teams if total_teams else 0.0,
+        mae_win_pct=total_abs_pct_error / total_teams if total_teams else 0.0,
         seed_accuracy_exact=(100.0 * seed_exact / seed_scored) if seed_scored else 0.0,
         seed_accuracy_pm1=(100.0 * seed_pm1 / seed_scored) if seed_scored else 0.0,
         playoff_berth_accuracy=(100.0 * playoff_hits / total_teams)
@@ -266,7 +289,7 @@ def _metric_value(metrics: SeasonMetrics, key: str) -> float:
 
 
 def _format_metric(key: str, value: float) -> str:
-    if key == "mae_wins":
+    if key in ("mae_wins", "mae_win_pct"):
         return f"{value:.2f}"
     if key == "brier_champion":
         return f"{value:.4f}"

@@ -33,6 +33,11 @@ BACKTEST_SEASONS = [
 PARTIAL_SEASON = "2018-19"
 ALL_SEASONS = [PARTIAL_SEASON] + BACKTEST_SEASONS
 
+# Fallback season length for seasons with no actuals yet. Win totals are
+# normalized as a rate (prior_wins / prior_games * target_games) so that the
+# short 2019-20 and 2020-21 slates are neither inflated nor double-shrunk.
+FULL_SEASON_GAMES = 82.0
+
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS baseline_scores (
     season  TEXT NOT NULL,
@@ -45,6 +50,7 @@ CREATE TABLE IF NOT EXISTS baseline_scores (
 
 METRIC_DIRECTION = {
     "mae_wins": "lower is better",
+    "mae_win_pct": "lower is better",
     "seed_accuracy_exact": "higher is better",
     "seed_accuracy_pm1": "higher is better",
     "playoff_berth_accuracy": "higher is better",
@@ -55,6 +61,7 @@ METRIC_DIRECTION = {
 
 METRIC_LABELS = {
     "mae_wins": "MAE wins",
+    "mae_win_pct": "MAE win % (scaled)",
     "seed_accuracy_exact": "Seed exact %",
     "seed_accuracy_pm1": "Seed ±1 %",
     "playoff_berth_accuracy": "Playoff berth %",
@@ -82,6 +89,7 @@ class TeamRow:
 @dataclass
 class SeasonMetrics:
     mae_wins: float
+    mae_win_pct: float
     seed_accuracy_exact: float
     seed_accuracy_pm1: float
     playoff_berth_accuracy: float
@@ -112,6 +120,17 @@ def _fetch_team_stats(con: sqlite3.Connection, season: str) -> dict[int, TeamRow
         )
         for team_id, abbr, wins, losses, seed, made_playoffs in rows
     }
+
+
+def _fetch_games_played(con: sqlite3.Connection, season: str) -> float:
+    """Average games actually played by a team in `season` (wins + losses)."""
+    row = con.execute(
+        "SELECT AVG(wins + losses) FROM team_stats WHERE season = ?",
+        (season,),
+    ).fetchone()
+    if not row or row[0] is None or float(row[0]) <= 0:
+        return FULL_SEASON_GAMES
+    return float(row[0])
 
 
 def _fetch_champion_abbr(con: sqlite3.Connection, season: str) -> str | None:
@@ -157,7 +176,10 @@ def compute_season_metrics(
     if not common_ids:
         return None
 
+    season_games = _fetch_games_played(con, target_season)
+
     win_errors: list[float] = []
+    win_pct_errors: list[float] = []
     seed_exact = 0
     seed_pm1 = 0
     playoff_hits = 0
@@ -166,7 +188,12 @@ def compute_season_metrics(
     for team_id in common_ids:
         pred = prior[team_id]
         act = actual[team_id]
-        win_errors.append(abs(pred.wins - act.wins))
+        # Rate-based: the prediction is a win rate over the source season's own
+        # games, projected onto the games this team actually played.
+        target_games = (act.wins + act.losses) or season_games
+        predicted_wins = pred.win_pct * target_games
+        win_errors.append(abs(predicted_wins - act.wins))
+        win_pct_errors.append(abs(pred.win_pct - act.win_pct) * 100.0)
 
         if pred.conference_seed is not None and act.conference_seed is not None:
             seed_scored += 1
@@ -200,6 +227,7 @@ def compute_season_metrics(
     n = len(common_ids)
     return SeasonMetrics(
         mae_wins=sum(win_errors) / n,
+        mae_win_pct=sum(win_pct_errors) / n,
         seed_accuracy_exact=(100.0 * seed_exact / seed_scored) if seed_scored else 0.0,
         seed_accuracy_pm1=(100.0 * seed_pm1 / seed_scored) if seed_scored else 0.0,
         playoff_berth_accuracy=100.0 * playoff_hits / n,
@@ -214,6 +242,7 @@ def _metrics_to_rows(season: str, metrics: SeasonMetrics) -> list[tuple[str, str
     note = metrics.notes
     return [
         (season, "mae_wins", metrics.mae_wins, note),
+        (season, "mae_win_pct", metrics.mae_win_pct, note),
         (season, "seed_accuracy_exact", metrics.seed_accuracy_exact, note),
         (season, "seed_accuracy_pm1", metrics.seed_accuracy_pm1, note),
         (season, "playoff_berth_accuracy", metrics.playoff_berth_accuracy, note),
@@ -228,6 +257,7 @@ def compute_pooled(
 ) -> SeasonMetrics:
     """Micro-average for continuous metrics; macro % for champion hits."""
     total_abs_error = 0.0
+    total_abs_pct_error = 0.0
     total_teams = 0
     seed_exact = 0
     seed_pm1 = 0
@@ -243,8 +273,14 @@ def compute_pooled(
         prior = _fetch_team_stats(con, source)
         actual = _fetch_team_stats(con, target)
         common_ids = sorted(set(prior) & set(actual))
+        season_games = _fetch_games_played(con, target)
         for team_id in common_ids:
-            total_abs_error += abs(prior[team_id].wins - actual[team_id].wins)
+            pred = prior[team_id]
+            act = actual[team_id]
+            target_games = (act.wins + act.losses) or season_games
+            predicted_wins = pred.win_pct * target_games
+            total_abs_error += abs(predicted_wins - act.wins)
+            total_abs_pct_error += abs(pred.win_pct - act.win_pct) * 100.0
             if (
                 prior[team_id].conference_seed is not None
                 and actual[team_id].conference_seed is not None
@@ -269,6 +305,7 @@ def compute_pooled(
 
     return SeasonMetrics(
         mae_wins=total_abs_error / total_teams if total_teams else 0.0,
+        mae_win_pct=total_abs_pct_error / total_teams if total_teams else 0.0,
         seed_accuracy_exact=(100.0 * seed_exact / seed_scored) if seed_scored else 0.0,
         seed_accuracy_pm1=(100.0 * seed_pm1 / seed_scored) if seed_scored else 0.0,
         playoff_berth_accuracy=(100.0 * playoff_hits / total_teams)
@@ -318,6 +355,7 @@ def print_scorecard(
     def fmt(season: str, m: SeasonMetrics) -> str:
         values = {
             "mae_wins": f"{m.mae_wins:.2f}",
+            "mae_win_pct": f"{m.mae_win_pct:.2f}",
             "seed_accuracy_exact": f"{m.seed_accuracy_exact:.1f}",
             "seed_accuracy_pm1": f"{m.seed_accuracy_pm1:.1f}",
             "playoff_berth_accuracy": f"{m.playoff_berth_accuracy:.1f}",
@@ -365,6 +403,16 @@ def main() -> None:
                 continue
             season_metrics[season] = metrics
         pooled = compute_pooled(con, season_metrics)
+        # Mirrors the POOLED_NO_1819 section engine_scores writes, so the two
+        # tables can be compared section-for-section.
+        pooled_no_partial = compute_pooled(
+            con, {s: m for s, m in season_metrics.items() if s != PARTIAL_SEASON}
+        )
+        pooled_no_partial.notes = (
+            f"pooled over {len(BACKTEST_SEASONS)} full seasons "
+            f"({', '.join(BACKTEST_SEASONS)}); "
+            "champion p = prior win_pct share (sums to 100%)"
+        )
     finally:
         con.close()
 
@@ -372,6 +420,7 @@ def main() -> None:
     for season, metrics in season_metrics.items():
         rows.extend(_metrics_to_rows(season, metrics))
     rows.extend(_metrics_to_rows("POOLED", pooled))
+    rows.extend(_metrics_to_rows("POOLED_NO_1819", pooled_no_partial))
 
     write_baseline_scores(rows)
     print_scorecard(season_metrics, pooled)

@@ -433,12 +433,13 @@ def simulate_series_po(
 def run_regular_season(
     profiles: list[TeamProfile],
     rng: np.random.Generator,
+    rs_games: int = RS_GAMES_PER_TEAM,
 ) -> np.ndarray:
     n = len(profiles)
     wins = np.zeros(n, dtype=np.int32)
     games_played = np.zeros(n, dtype=np.int32)
 
-    for rnd in range(RS_GAMES_PER_TEAM):
+    for rnd in range(rs_games):
         perm = rng.permutation(n)
         for k in range(0, n, 2):
             ia, ib = int(perm[k]), int(perm[k + 1])
@@ -540,6 +541,20 @@ def conference_playoff_bracket(
 
     champ = simulate_series_po(u, l, seed_of(u), seed_of(l), profiles, rng, losers_exit, 3)
     return champ
+
+
+def season_games_per_team(con: sqlite3.Connection, season: str) -> int:
+    """Regular-season games each team actually played in `season`.
+
+    Seasons with no actuals yet (future / unplayed) fall back to a full slate,
+    so upcoming seasons still simulate 82 games."""
+    row = con.execute(
+        "SELECT AVG(wins + losses) FROM team_stats WHERE season = ?",
+        (season,),
+    ).fetchone()
+    if not row or row[0] is None or float(row[0]) <= 0:
+        return RS_GAMES_PER_TEAM
+    return int(round(float(row[0])))
 
 
 def _projected_column_names(con: sqlite3.Connection) -> set[str]:
@@ -719,6 +734,7 @@ def run_one_full_sim(
     profiles: list[TeamProfile],
     abbrs: list[str],
     rng: np.random.Generator,
+    rs_games: int = RS_GAMES_PER_TEAM,
 ) -> tuple[np.ndarray, dict[int, int], dict[int, int]]:
     """
     Returns wins (30,), conference seed 1–15 per team, playoff exit code:
@@ -729,7 +745,7 @@ def run_one_full_sim(
       4 = lost Finals
       5 = champion
     """
-    wins = run_regular_season(profiles, rng)
+    wins = run_regular_season(profiles, rng, rs_games)
     tiebreak = rng.random(N_TEAMS)
 
     east = conf_indices(abbrs, "East")
@@ -876,10 +892,12 @@ def main(
     con = sqlite3.connect(DB_PATH)
     try:
         profiles, abbrs = load_profiles(con, target_season)
+        rs_games = season_games_per_team(con, target_season)
     finally:
         con.close()
 
     print_depth_validation(profiles, ("SAS", "DET"))
+    print(f"\nRegular season length for {target_season}: {rs_games} games per team.")
 
     rng_master = np.random.default_rng(20260514)
     win_sum = np.zeros(N_TEAMS, dtype=np.float64)
@@ -888,7 +906,7 @@ def main(
 
     for _ in range(N_SIMULATIONS):
         sim_rng = np.random.default_rng(int(rng_master.integers(0, 2**63 - 1, dtype=np.int64)))
-        wins, conf_seed, exit_code = run_one_full_sim(profiles, abbrs, sim_rng)
+        wins, conf_seed, exit_code = run_one_full_sim(profiles, abbrs, sim_rng, rs_games)
         win_sum += wins.astype(np.float64)
         for tid, sd in conf_seed.items():
             if 1 <= sd <= 15:
@@ -920,7 +938,7 @@ def main(
     print(df.to_string(index=False))
     print(
         f"\nWrote simulation_results ({N_SIMULATIONS} simulations, "
-        f"season={target_season!r}, run_id={run_id!r})."
+        f"{rs_games} RS games, season={target_season!r}, run_id={run_id!r})."
     )
 
 

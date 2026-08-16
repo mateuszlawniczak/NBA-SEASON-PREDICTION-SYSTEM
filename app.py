@@ -35,6 +35,16 @@ import streamlit as st
 # functions / dataclasses (main() is guarded by __main__), so no simulation
 # runs and nothing is written to the DB on import.
 import run_monte_carlo as mc
+
+# Scorecard metadata + winner logic are reused from the scoring scripts so the
+# dashboard can never drift from what compute_engine_scores.py prints.
+from compute_engine_scores import (
+    BACKTEST_SEASONS,
+    LOWER_IS_BETTER,
+    METRIC_LABELS,
+    _format_metric,
+    _winner,
+)
  
  
 # ---------------------------------------------------------------------------
@@ -64,6 +74,7 @@ NAV_ITEMS = [
     "My System",
     "Adjust Variables",
     "Current Formula",
+    "Me vs Baseline",
     "What If?",
     "AI Bot",
     "Creator",
@@ -422,6 +433,30 @@ def load_sim_results(season: str) -> pd.DataFrame:
     return df
  
  
+@st.cache_data(show_spinner=False)
+def load_score_table(table: str) -> dict[str, dict[str, float]]:
+    """engine_scores / baseline_scores as {section: {metric: value}}.
+
+    Returns an empty dict when the table hasn't been produced yet, so the
+    scorecard degrades to a message instead of raising."""
+    if table not in ("engine_scores", "baseline_scores"):
+        raise ValueError(f"unsupported score table: {table}")
+    con = _ro_connect()
+    try:
+        rows = con.execute(
+            f"SELECT season, metric, value FROM {table}"
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        con.close()
+
+    out: dict[str, dict[str, float]] = {}
+    for season, metric, value in rows:
+        out.setdefault(str(season), {})[str(metric)] = float(value)
+    return out
+
+
 @st.cache_data(show_spinner=False)
 def load_player_pr(season: str) -> pd.DataFrame:
     """ULTIMATE_PR — player PR ratings and positions (drives Tab 1 filters).
@@ -1329,6 +1364,113 @@ the title. Repeat across many simulations and the frequencies become odds.
         )
  
  
+SCORECARD_SECTIONS = list(BACKTEST_SEASONS) + ["POOLED", "POOLED_NO_1819"]
+
+_WINNER_COLORS = {
+    "engine": "#22c55e",
+    "baseline": "#ef4444",
+    "tie": "#ffffff",
+}
+
+
+def _scorecard_section_label(section: str) -> str:
+    """Display label only — the DB keys stay POOLED / POOLED_NO_1819."""
+    if section == "POOLED":
+        return "All seasons (2018-19 →)"
+    if section == "POOLED_NO_1819":
+        return "Backtest average (6 seasons)"
+    return _season_display(section)
+
+
+def _winner_cell_style(col: pd.Series) -> list[str]:
+    return [
+        f"color: {_WINNER_COLORS.get(str(v).strip().lower(), '#ffffff')}; "
+        "font-weight: 900;"
+        for v in col
+    ]
+
+
+def view_me_vs_baseline(col_main, col_filters) -> None:
+    """Head-to-head scorecard: stored engine_scores vs baseline_scores.
+
+    DISPLAY ONLY — both tables are read as produced by compute_engine_scores.py
+    and compute_baseline_scores.py. Nothing is recomputed or written here."""
+    engine = load_score_table("engine_scores")
+    baseline = load_score_table("baseline_scores")
+
+    with col_filters:
+        st.markdown('<div class="eop-eyebrow">Filters</div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            section = st.selectbox(
+                "Season",
+                options=SCORECARD_SECTIONS,
+                index=SCORECARD_SECTIONS.index("POOLED_NO_1819"),
+                format_func=_scorecard_section_label,
+                help="Backtest season, or a pooled row across seasons.",
+            )
+        st.markdown('<div class="eop-eyebrow">Direction</div>',
+                    unsafe_allow_html=True)
+        st.markdown("↓ lower is better\n\n↑ higher is better")
+
+    with col_main:
+        st.markdown(
+            '<div class="brand" style="font-size:1.7rem;">Me vs Baseline</div>'
+            '<div class="brand-sub">Engine accuracy against the naive '
+            'previous-season baseline, metric by metric.</div>',
+            unsafe_allow_html=True,
+        )
+
+        if section not in engine or section not in baseline:
+            st.info(
+                f"No scores for {_scorecard_section_label(section)} — run "
+                "`compute_baseline_scores.py` and `compute_engine_scores.py` "
+                "to populate both tables."
+            )
+            return
+
+        rows = []
+        for key, label in METRIC_LABELS.items():
+            if key not in engine[section] or key not in baseline[section]:
+                continue
+            e = engine[section][key]
+            b = baseline[section][key]
+            arrow = "↓" if key in LOWER_IS_BETTER else "↑"
+            rows.append(
+                {
+                    "Metric": f"{label} {arrow}",
+                    "Engine": _format_metric(key, e),
+                    "Baseline": _format_metric(key, b),
+                    "Diff": _format_metric(key, e - b),
+                    "Winner": _winner(key, b, e).title(),
+                }
+            )
+
+        if not rows:
+            st.info(
+                f"No scores for {_scorecard_section_label(section)} — run "
+                "`compute_baseline_scores.py` and `compute_engine_scores.py` "
+                "to populate both tables."
+            )
+            return
+
+        table = pd.DataFrame(rows)
+        st.markdown(
+            f'<div class="eop-eyebrow">Scorecard · '
+            f'{_scorecard_section_label(section)}</div>',
+            unsafe_allow_html=True,
+        )
+        st.dataframe(
+            style_table(table).apply(_winner_cell_style, subset=["Winner"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "Diff = engine − baseline. Each season is simulated over the number "
+            "of games it actually played (2019–20 and 2020–21 were short), so "
+            "win totals are directly comparable and MAE win % is scale-free."
+        )
+
+
 def view_coming_soon(col_main, col_filters, title: str, blurb: str) -> None:
     with col_filters:
         st.markdown('<div class="eop-eyebrow">Status</div>', unsafe_allow_html=True)
@@ -1410,6 +1552,8 @@ def main() -> None:
         view_adjust_variables(col_main, col_filters)
     elif nav == "Current Formula":
         view_current_formula(col_main, col_filters)
+    elif nav == "Me vs Baseline":
+        view_me_vs_baseline(col_main, col_filters)
     elif nav == "What If?":
         view_coming_soon(col_main, col_filters, "What If?",
                          "Swap players between teams and re-run the season.")
