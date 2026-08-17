@@ -43,8 +43,9 @@ COACH_GRADE_MULT: dict[str, float] = {
 }
 PLAYSTYLE_FALLBACK_MULT = 0.90
 
-HOME_MULT = 1.04
-AWAY_FATIGUE_MULT = 0.96
+BT_EXPONENT = 1.0
+HOME_ODDS = 1.04
+FATIGUE_ODDS = 1.0416667
 AWAY_FATIGUE_PROB = 0.135
 
 STAR_BOOST_PO = 1.15
@@ -378,12 +379,18 @@ def p_win_home(
     away_fatigue: bool,
     rng: np.random.Generator,
 ) -> bool:
-    rh = rating_home * HOME_MULT
-    ra = rating_away * (AWAY_FATIGUE_MULT if away_fatigue else 1.0)
-    denom = rh + ra
+    # A and F multiply the odds outside the exponent so k can be swept
+    # without silently rescaling home advantage or the fatigue penalty.
+    rh = rating_home if rating_home > 0.0 else 1e-12
+    ra = rating_away if rating_away > 0.0 else 1e-12
+    k = BT_EXPONENT
+    a = HOME_ODDS
+    f = FATIGUE_ODDS if away_fatigue else 1.0
+    home_term = a * f * (rh ** k)
+    denom = home_term + (ra ** k)
     if denom <= 0:
         return rng.random() < 0.5
-    return (rng.random() * denom) < rh
+    return (rng.random() * denom) < home_term
 
 
 def simulate_series_po(
@@ -881,7 +888,15 @@ def main(
     target_season: str | None = None,
     run_id: str = DEFAULT_RUN_ID,
     seed: int = MASTER_SEED,
+    k: float = BT_EXPONENT,
+    home_odds: float = HOME_ODDS,
+    fatigue_odds: float = FATIGUE_ODDS,
 ) -> None:
+    global BT_EXPONENT, HOME_ODDS, FATIGUE_ODDS
+    BT_EXPONENT = float(k)
+    HOME_ODDS = float(home_odds)
+    FATIGUE_ODDS = float(fatigue_odds)
+
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -900,6 +915,10 @@ def main(
 
     print_depth_validation(profiles, ("SAS", "DET"))
     print(f"\nRegular season length for {target_season}: {rs_games} games per team.")
+    print(
+        f"BT params: k={BT_EXPONENT}, home_odds={HOME_ODDS}, "
+        f"fatigue_odds={FATIGUE_ODDS}"
+    )
 
     rng_master = np.random.default_rng(seed)
     win_sum = np.zeros(N_TEAMS, dtype=np.float64)
