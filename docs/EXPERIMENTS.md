@@ -83,6 +83,23 @@ Goal for Phase 4: pull MAE clearly below 8.82, and get champion top-4 above the 
 
 <!-- Add each new experiment below, newest at the bottom. Copy the template above. -->
 
+## Noise floor (measured runs 12-15, k=2.25, seeds 20260514/111/222/333)
+
+Max-min spread across four identical-formula runs. A change smaller than its
+threshold is dice, not signal:
+
+  MAE wins              0.029
+  MAE win %             0.034
+  Seed exact %          1.4
+  Seed ±1 %             2.4
+  Playoff berth %       1.0
+  Brier                 0.0004
+  Champion top-1/top-4  move only in 14.3% steps (7 seasons)
+  pooled predicted sd   0.037
+
+k must be re-swept after any change that improves ranking quality, because the
+optimal spread is r x actual spread and r is currently 0.589.
+
 ## Run 1 — 2026-08-16 — d358a2a
 original formula, pre-tuning baseline
 
@@ -134,3 +151,159 @@ POOLED_NO_1819 (vs baseline):
   Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
   Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
   Brier (champion)    0.0324   (prev run 0.0324, 0.0000)   baseline 0.0318   baseline
+
+## Run 5 — 2026-08-17 — 7eb8942
+BT refactor, defaults = old behaviour, regression check
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              8.56   (prev run 8.56, 0.00)   baseline 8.65   engine
+  MAE win % (scaled)   10.71   (prev run 10.71, 0.00)   baseline 10.99   engine
+  Seed exact %          10.5   (prev run 10.5, 0.0)   baseline 15.2   baseline
+  Seed ±1 %             28.6   (prev run 28.6, 0.0)   baseline 36.2   baseline
+  Playoff berth %       69.5   (prev run 69.5, 0.0)   baseline 69.5   tie
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0324   (prev run 0.0324, 0.0000)   baseline 0.0318   baseline
+
+## Run 6 — 2026-08-17 — 7eb8942
+control: home advantage only, k=1 [home_odds=1.38]
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              8.59   (prev run 8.56, +0.02)   baseline 8.65   engine
+  MAE win % (scaled)   10.73   (prev run 10.71, +0.03)   baseline 10.99   engine
+  Seed exact %          13.3   (prev run 10.5, +2.9)   baseline 15.2   baseline
+  Seed ±1 %             32.4   (prev run 28.6, +3.8)   baseline 36.2   baseline
+  Playoff berth %       70.5   (prev run 69.5, +1.0)   baseline 69.5   engine
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0329   (prev run 0.0324, +0.0005)   baseline 0.0318   baseline
+
+## Run 7 — 2026-08-17 — 7eb8942
+BT exponent sweep [k=2.5, home_odds=1.38]
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              7.81   (prev run 8.59, -0.78)   baseline 8.65   engine
+  MAE win % (scaled)    9.80   (prev run 10.73, -0.94)   baseline 10.99   engine
+  Seed exact %          13.3   (prev run 13.3, 0.0)   baseline 15.2   baseline
+  Seed ±1 %             31.4   (prev run 32.4, -1.0)   baseline 36.2   baseline
+  Playoff berth %       70.5   (prev run 70.5, 0.0)   baseline 69.5   engine
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0382   (prev run 0.0329, +0.0053)   baseline 0.0318   baseline
+
+## Run 8 — 2026-08-17 — 7eb8942
+BT exponent sweep [k=3.0, home_odds=1.38]
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              7.89   (prev run 7.81, +0.08)   baseline 8.65   engine
+  MAE win % (scaled)    9.92   (prev run 9.80, +0.12)   baseline 10.99   engine
+  Seed exact %          12.4   (prev run 13.3, -1.0)   baseline 15.2   baseline
+  Seed ±1 %             32.9   (prev run 31.4, +1.4)   baseline 36.2   baseline
+  Playoff berth %       71.0   (prev run 70.5, +0.5)   baseline 69.5   engine
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0396   (prev run 0.0382, +0.0014)   baseline 0.0318   baseline
+
+## Run 9 — 2026-08-17 — 7eb8942
+BT exponent sweep [k=3.5, home_odds=1.38]
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              8.01   (prev run 7.89, +0.12)   baseline 8.65   engine
+  MAE win % (scaled)   10.09   (prev run 9.92, +0.18)   baseline 10.99   engine
+  Seed exact %          12.4   (prev run 12.4, 0.0)   baseline 15.2   baseline
+  Seed ±1 %             32.9   (prev run 32.9, 0.0)   baseline 36.2   baseline
+  Playoff berth %       71.9   (prev run 71.0, +1.0)   baseline 69.5   engine
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0414   (prev run 0.0396, +0.0017)   baseline 0.0318   baseline
+
+## Run 10 — 2026-08-17 — 7eb8942
+BT exponent sweep [k=4.0, home_odds=1.38]
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              8.21   (prev run 8.01, +0.20)   baseline 8.65   engine
+  MAE win % (scaled)   10.37   (prev run 10.09, +0.28)   baseline 10.99   engine
+  Seed exact %          11.0   (prev run 12.4, -1.4)   baseline 15.2   baseline
+  Seed ±1 %             31.4   (prev run 32.9, -1.4)   baseline 36.2   baseline
+  Playoff berth %       71.4   (prev run 71.9, -0.5)   baseline 69.5   engine
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0429   (prev run 0.0414, +0.0015)   baseline 0.0318   baseline
+
+## Run 11 — 2026-08-17 — 7eb8942
+BT exponent sweep [k=2.0, home_odds=1.38]
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              7.89   (prev run 8.21, -0.31)   baseline 8.65   engine
+  MAE win % (scaled)    9.89   (prev run 10.37, -0.48)   baseline 10.99   engine
+  Seed exact %          12.9   (prev run 11.0, +1.9)   baseline 15.2   baseline
+  Seed ±1 %             33.3   (prev run 31.4, +1.9)   baseline 36.2   baseline
+  Playoff berth %       70.5   (prev run 71.4, -1.0)   baseline 69.5   engine
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0359   (prev run 0.0429, -0.0069)   baseline 0.0318   baseline
+
+## Run 12 — 2026-08-17 — 7eb8942
+BT exponent sweep [k=2.25, home_odds=1.38]
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              7.83   (prev run 7.89, -0.06)   baseline 8.65   engine
+  MAE win % (scaled)    9.81   (prev run 9.89, -0.07)   baseline 10.99   engine
+  Seed exact %          13.8   (prev run 12.9, +1.0)   baseline 15.2   baseline
+  Seed ±1 %             31.4   (prev run 33.3, -1.9)   baseline 36.2   baseline
+  Playoff berth %       70.5   (prev run 70.5, 0.0)   baseline 69.5   engine
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0372   (prev run 0.0359, +0.0013)   baseline 0.0318   baseline
+
+## Run 13 — 2026-08-17 — 7eb8942
+noise floor [seed=111, k=2.25, home_odds=1.38]
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              7.85   (prev run 7.83, +0.02)   baseline 8.65   engine
+  MAE win % (scaled)    9.84   (prev run 9.81, +0.02)   baseline 10.99   engine
+  Seed exact %          12.4   (prev run 13.8, -1.4)   baseline 15.2   baseline
+  Seed ±1 %             33.8   (prev run 31.4, +2.4)   baseline 36.2   baseline
+  Playoff berth %       70.5   (prev run 70.5, 0.0)   baseline 69.5   engine
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0368   (prev run 0.0372, -0.0004)   baseline 0.0318   baseline
+
+## Run 14 — 2026-08-17 — 7eb8942
+noise floor [seed=222, k=2.25, home_odds=1.38]
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              7.82   (prev run 7.85, -0.03)   baseline 8.65   engine
+  MAE win % (scaled)    9.80   (prev run 9.84, -0.03)   baseline 10.99   engine
+  Seed exact %          13.3   (prev run 12.4, +1.0)   baseline 15.2   baseline
+  Seed ±1 %             31.9   (prev run 33.8, -1.9)   baseline 36.2   baseline
+  Playoff berth %       71.4   (prev run 70.5, +1.0)   baseline 69.5   engine
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0371   (prev run 0.0368, +0.0003)   baseline 0.0318   baseline
+
+## Run 15 — 2026-08-17 — 7eb8942
+noise floor [seed=333, k=2.25, home_odds=1.38]
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              7.83   (prev run 7.82, +0.01)   baseline 8.65   engine
+  MAE win % (scaled)    9.81   (prev run 9.80, +0.01)   baseline 10.99   engine
+  Seed exact %          12.4   (prev run 13.3, -1.0)   baseline 15.2   baseline
+  Seed ±1 %             33.3   (prev run 31.9, +1.4)   baseline 36.2   baseline
+  Playoff berth %       70.5   (prev run 71.4, -1.0)   baseline 69.5   engine
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0371   (prev run 0.0371, -0.0000)   baseline 0.0318   baseline
+
+## Run 16 — 2026-08-17 — cc42273
+locked in k=2.25, home odds 1.38 as defaults
+
+POOLED_NO_1819 (vs baseline):
+  MAE wins              7.83   (prev run 7.83, +0.00)   baseline 8.65   engine
+  MAE win % (scaled)    9.81   (prev run 9.81, +0.00)   baseline 10.99   engine
+  Seed exact %          13.8   (prev run 12.4, +1.4)   baseline 15.2   baseline
+  Seed ±1 %             31.4   (prev run 33.3, -1.9)   baseline 36.2   baseline
+  Playoff berth %       70.5   (prev run 70.5, 0.0)   baseline 69.5   engine
+  Champion top-1 %       0.0   (prev run 0.0, 0.0)   baseline 14.3   baseline
+  Champion top-4 %      28.6   (prev run 28.6, 0.0)   baseline 42.9   baseline
+  Brier (champion)    0.0372   (prev run 0.0371, +0.0001)   baseline 0.0318   baseline
