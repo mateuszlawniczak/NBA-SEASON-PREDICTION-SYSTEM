@@ -37,6 +37,7 @@ from compute_baseline_scores import (
     compute_pooled as compute_baseline_pooled,
     compute_season_metrics as compute_baseline_season_metrics,
 )
+from run_monte_carlo import TEAM_CONFERENCE
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "nba_data.db")
 EXPERIMENTS_PATH = os.path.join(os.path.dirname(__file__), "docs", "EXPERIMENTS.md")
@@ -93,6 +94,18 @@ JOIN baseline_scores bs
 
 SEED_COLS = [f"seed_{i}_pct" for i in range(1, 16)]
 LOWER_IS_BETTER = {"mae_wins", "mae_win_pct", "brier_champion"}
+SEED_METRICS = ("seed_accuracy_exact", "seed_accuracy_pm1")
+EXPECTED_TEAMS_PER_CONFERENCE = 15
+EXPECTED_SNAPSHOT_TEAMS = 30
+
+# Conference ranking key. "avg_wins" = more simulated wins → better seed;
+# "expected_seed" = sum_i i * seed_i_pct, lower (better) expected seed first.
+# Picked expected_seed: on the k=1 snapshots (runs 3/5) it scored seed ±1
+# 34.3% vs 32.9% for avg_wins — the comparison the modal 10.5/28.6 sat on.
+# On current production (k=2.25) the ±1 ranking flips (avg_wins 34.3 vs 33.8).
+SEED_RANK_AVG_WINS = "avg_wins"
+SEED_RANK_EXPECTED = "expected_seed"
+SEED_RANK_METHOD = SEED_RANK_EXPECTED
 
 
 @dataclass(frozen=True)
@@ -144,16 +157,82 @@ def _games_simulated(con: sqlite3.Connection, season: str) -> int:
     return int(round(_fetch_games_played(con, season)))
 
 
-def _predicted_seed(seed_pcts: tuple[float, ...]) -> int | None:
-    if not seed_pcts:
-        return None
-    best_seed = 1
-    best_pct = seed_pcts[0]
-    for i, pct in enumerate(seed_pcts, start=1):
-        if pct > best_pct:
-            best_pct = pct
-            best_seed = i
-    return best_seed
+def _expected_seed(seed_pcts: tuple[float, ...]) -> float:
+    """E[seed] up to a positive scale: sum over i of i * seed_i_pct."""
+    return sum((i + 1) * pct for i, pct in enumerate(seed_pcts))
+
+
+def _conference_of(team: str, season: str) -> str:
+    conf = TEAM_CONFERENCE.get(team)
+    if conf not in ("East", "West"):
+        raise RuntimeError(
+            f"{season}: team {team!r} does not resolve to East or West "
+            f"(got {conf!r}). Aborting."
+        )
+    return conf
+
+
+def assign_conference_seeds(
+    preds: dict[str, EngineRow],
+    season: str,
+    method: str | None = None,
+) -> dict[str, int]:
+    """Assign seeds 1..15 within each conference. Never depends on row order.
+
+    Ties break on team abbreviation ascending. Aborts if any team has no
+    East/West mapping, or if a conference is not a permutation of 1..15.
+    """
+    method = method or SEED_RANK_METHOD
+    if method not in (SEED_RANK_AVG_WINS, SEED_RANK_EXPECTED):
+        raise RuntimeError(f"unknown seed rank method {method!r}")
+
+    unresolved = sorted(
+        team
+        for team in preds
+        if TEAM_CONFERENCE.get(team) not in ("East", "West")
+    )
+    if unresolved:
+        raise RuntimeError(
+            f"{season}: {len(unresolved)} team(s) do not resolve to East or "
+            f"West: {', '.join(unresolved)}. Aborting."
+        )
+
+    assigned: dict[str, int] = {}
+    for conf in ("East", "West"):
+        teams = [team for team in preds if TEAM_CONFERENCE[team] == conf]
+        if method == SEED_RANK_AVG_WINS:
+            ordered = sorted(teams, key=lambda t: (-preds[t].avg_wins, t))
+        else:
+            ordered = sorted(
+                teams, key=lambda t: (_expected_seed(preds[t].seed_pcts), t)
+            )
+        if len(ordered) != EXPECTED_TEAMS_PER_CONFERENCE:
+            raise RuntimeError(
+                f"{season} {conf}: {len(ordered)} team(s), expected "
+                f"{EXPECTED_TEAMS_PER_CONFERENCE}. Aborting."
+            )
+        for seed, team in enumerate(ordered, start=1):
+            assigned[team] = seed
+        got = sorted(assigned[team] for team in teams)
+        expected = list(range(1, EXPECTED_TEAMS_PER_CONFERENCE + 1))
+        if got != expected:
+            raise RuntimeError(
+                f"{season} {conf}: seeds {got} are not {expected}. Aborting."
+            )
+    return assigned
+
+
+def _duplicate_seed_count(assigned: dict[str, int], season: str) -> int:
+    """Team-seasons sharing a seed with a conference rival. Must be 0."""
+    dupes = 0
+    for conf in ("East", "West"):
+        seeds: dict[int, int] = {}
+        for team, seed in assigned.items():
+            if _conference_of(team, season) != conf:
+                continue
+            seeds[seed] = seeds.get(seed, 0) + 1
+        dupes += sum(n for n in seeds.values() if n > 1)
+    return dupes
 
 
 def _champion_probs_from_engine(preds: dict[str, EngineRow]) -> dict[str, float]:
@@ -161,15 +240,23 @@ def _champion_probs_from_engine(preds: dict[str, EngineRow]) -> dict[str, float]
 
 
 def compute_season_metrics(
-    con: sqlite3.Connection, target_season: str, notes: str = ""
+    con: sqlite3.Connection,
+    target_season: str,
+    notes: str = "",
+    run_id: str = RUN_ID,
+    seed_rank_method: str | None = None,
 ) -> SeasonMetrics | None:
-    preds = _fetch_engine_predictions(con, target_season)
+    preds = _fetch_engine_predictions(con, target_season, run_id=run_id)
     actual_by_id = _fetch_team_stats(con, target_season)
     actual_by_abbr = {row.team_abbr: row for row in actual_by_id.values()}
 
     common_abbrs = sorted(set(preds) & set(actual_by_abbr))
     if not common_abbrs:
         return None
+
+    assigned = assign_conference_seeds(
+        preds, target_season, method=seed_rank_method
+    )
 
     # run_monte_carlo plays each season's real number of games, so avg_wins is
     # already on the target season's scale — rescaling here would shrink it a
@@ -191,8 +278,8 @@ def compute_season_metrics(
             abs(pred.avg_wins / games_simulated - act.win_pct) * 100.0
         )
 
-        pred_seed = _predicted_seed(pred.seed_pcts)
-        if pred_seed is not None and act.conference_seed is not None:
+        pred_seed = assigned[abbr]
+        if act.conference_seed is not None:
             seed_scored += 1
             if pred_seed == act.conference_seed:
                 seed_exact += 1
@@ -238,7 +325,10 @@ def compute_season_metrics(
 
 
 def compute_pooled(
-    con: sqlite3.Connection, all_metrics: dict[str, SeasonMetrics]
+    con: sqlite3.Connection,
+    all_metrics: dict[str, SeasonMetrics],
+    run_id: str = RUN_ID,
+    seed_rank_method: str | None = None,
 ) -> SeasonMetrics:
     """Micro-average for continuous metrics; macro % for champion hits."""
     total_abs_error = 0.0
@@ -254,11 +344,14 @@ def compute_pooled(
     n_seasons = len(all_metrics)
 
     for target, metrics in all_metrics.items():
-        preds = _fetch_engine_predictions(con, target)
+        preds = _fetch_engine_predictions(con, target, run_id=run_id)
         actual_by_id = _fetch_team_stats(con, target)
         actual_by_abbr = {row.team_abbr: row for row in actual_by_id.values()}
         common_abbrs = sorted(set(preds) & set(actual_by_abbr))
         games_simulated = _games_simulated(con, target)
+        assigned = assign_conference_seeds(
+            preds, target, method=seed_rank_method
+        )
 
         for abbr in common_abbrs:
             pred = preds[abbr]
@@ -268,8 +361,8 @@ def compute_pooled(
                 abs(pred.avg_wins / games_simulated - act.win_pct) * 100.0
             )
 
-            pred_seed = _predicted_seed(pred.seed_pcts)
-            if pred_seed is not None and act.conference_seed is not None:
+            pred_seed = assigned[abbr]
+            if act.conference_seed is not None:
                 seed_scored += 1
                 if pred_seed == act.conference_seed:
                     seed_exact += 1
@@ -288,6 +381,7 @@ def compute_pooled(
         if metrics.champion_top4 >= 100.0:
             champion_top4_hits += 1
 
+    season_list = ", ".join(all_metrics.keys())
     return SeasonMetrics(
         mae_wins=total_abs_error / total_teams if total_teams else 0.0,
         mae_win_pct=total_abs_pct_error / total_teams if total_teams else 0.0,
@@ -299,10 +393,234 @@ def compute_pooled(
         champion_top1=(100.0 * champion_top1_hits / n_seasons) if n_seasons else 0.0,
         champion_top4=(100.0 * champion_top4_hits / n_seasons) if n_seasons else 0.0,
         brier_champion=brier_sum / total_teams if total_teams else 0.0,
-        notes=(
-            f"pooled over {n_seasons} seasons ({', '.join(all_metrics.keys())}); "
-            f"run_id={RUN_ID}"
-        ),
+        notes=f"pooled over {n_seasons} seasons ({season_list}); run_id={run_id}",
+    )
+
+
+def compute_all_sections(
+    con: sqlite3.Connection,
+    run_id: str = RUN_ID,
+    seed_rank_method: str | None = None,
+) -> dict[str, SeasonMetrics]:
+    """Per-season + POOLED + POOLED_NO_1819 metrics for one prediction snapshot."""
+    season_metrics: dict[str, SeasonMetrics] = {}
+    for season in ALL_SEASONS:
+        notes = "caveated / partial data" if season == PARTIAL_SEASON else ""
+        metrics = compute_season_metrics(
+            con,
+            season,
+            notes=notes,
+            run_id=run_id,
+            seed_rank_method=seed_rank_method,
+        )
+        if metrics is None:
+            print(f"[warn] skipping {season}: missing predictions or actuals")
+            continue
+        season_metrics[season] = metrics
+
+    if not season_metrics:
+        return {}
+
+    pooled = compute_pooled(
+        con, season_metrics, run_id=run_id, seed_rank_method=seed_rank_method
+    )
+    backtest = {s: m for s, m in season_metrics.items() if s != PARTIAL_SEASON}
+    pooled_no_partial = compute_pooled(
+        con, backtest, run_id=run_id, seed_rank_method=seed_rank_method
+    )
+    backtest_list = ", ".join(BACKTEST_SEASONS)
+    pooled_no_partial.notes = (
+        f"pooled over {len(BACKTEST_SEASONS)} full seasons "
+        f"({backtest_list}); run_id={run_id}"
+    )
+    return {
+        **season_metrics,
+        "POOLED": pooled,
+        "POOLED_NO_1819": pooled_no_partial,
+    }
+
+
+def count_duplicate_seed_assignments(
+    con: sqlite3.Connection,
+    run_id: str = RUN_ID,
+    seed_rank_method: str | None = None,
+    seasons: list[str] | None = None,
+) -> int:
+    """Team-seasons sharing a conference seed. Conference rank must yield 0."""
+    total = 0
+    for season in seasons or BACKTEST_SEASONS:
+        preds = _fetch_engine_predictions(con, season, run_id=run_id)
+        if not preds:
+            continue
+        assigned = assign_conference_seeds(
+            preds, season, method=seed_rank_method
+        )
+        total += _duplicate_seed_count(assigned, season)
+    return total
+
+
+def _snapshot_skip_reason(con: sqlite3.Connection, run_id: str) -> str | None:
+    """None if the frozen snapshot is complete; otherwise why to skip."""
+    rows = con.execute(
+        """
+        SELECT season, COUNT(*) AS n, COUNT(DISTINCT team) AS teams
+        FROM simulation_results
+        WHERE run_id = ?
+        GROUP BY season
+        """,
+        (run_id,),
+    ).fetchall()
+    if not rows:
+        return "no snapshot in simulation_results"
+    by_season = {season: (n, teams) for season, n, teams in rows}
+    missing = [season for season in ALL_SEASONS if season not in by_season]
+    if missing:
+        return f"missing season(s): {', '.join(missing)}"
+    extra = sorted(set(by_season) - set(ALL_SEASONS))
+    if extra:
+        return f"unexpected season(s): {', '.join(extra)}"
+    incomplete = [
+        f"{season} has {n} row(s)/{teams} team(s), expected "
+        f"{EXPECTED_SNAPSHOT_TEAMS}"
+        for season, (n, teams) in by_season.items()
+        if n != EXPECTED_SNAPSHOT_TEAMS or teams != EXPECTED_SNAPSHOT_TEAMS
+    ]
+    if incomplete:
+        return "incomplete: " + "; ".join(incomplete)
+    seed_null_sql = " OR ".join(f"{col} IS NULL" for col in SEED_COLS)
+    nulls = con.execute(
+        f"""
+        SELECT COUNT(1) FROM simulation_results
+        WHERE run_id = ?
+          AND (avg_wins IS NULL OR {seed_null_sql})
+        """,
+        (run_id,),
+    ).fetchone()[0]
+    if nulls:
+        return f"{nulls} row(s) missing avg_wins or a seed_i_pct column"
+    return None
+
+
+def compare_seed_rank_methods(run_id: str = RUN_ID) -> None:
+    """Print POOLED_NO_1819 seed exact / ±1 for both ranking keys."""
+    con = sqlite3.connect(DB_PATH)
+    try:
+        print(f"\n=== Seed rank key comparison (run_id={run_id!r}) ===\n")
+        print(
+            f"{'method':<16} {'exact %':>10} {'pm1 %':>10} "
+            f"{'dupes (backtest)':>18}"
+        )
+        for method in (SEED_RANK_AVG_WINS, SEED_RANK_EXPECTED):
+            sections = compute_all_sections(
+                con, run_id=run_id, seed_rank_method=method
+            )
+            pooled = sections["POOLED_NO_1819"]
+            dupes = count_duplicate_seed_assignments(
+                con, run_id=run_id, seed_rank_method=method
+            )
+            print(
+                f"{method:<16} {pooled.seed_accuracy_exact:10.1f} "
+                f"{pooled.seed_accuracy_pm1:10.1f} {dupes:18d}"
+            )
+    finally:
+        con.close()
+
+
+def rescore_historical_seed_metrics() -> None:
+    """Rewrite seed_accuracy_* in run_scores from each complete snapshot.
+
+    Deliberate exception to run_scores being append-only: the old modal seed
+    was not a valid permutation, so historical seed metrics are not comparable
+    to the conference-rank definition. Every other metric is left untouched.
+    """
+    con = sqlite3.connect(DB_PATH, isolation_level=None)
+    skipped: list[tuple[int, str]] = []
+    changed: list[tuple[int, str, str, float, float]] = []
+    before_all: dict[tuple[int, str, str], float] = {}
+    try:
+        run_ids = [
+            int(row[0]) for row in con.execute("SELECT id FROM runs ORDER BY id")
+        ]
+        for row in con.execute("SELECT run, season, metric, value FROM run_scores"):
+            before_all[(int(row[0]), str(row[1]), str(row[2]))] = float(row[3])
+
+        con.execute("BEGIN IMMEDIATE")
+        for run in run_ids:
+            tag = str(run)
+            reason = _snapshot_skip_reason(con, tag)
+            if reason:
+                skipped.append((run, reason))
+                continue
+            sections = compute_all_sections(con, run_id=tag)
+            for season, metrics in sections.items():
+                for metric in SEED_METRICS:
+                    new_val = float(getattr(metrics, metric))
+                    old = before_all.get((run, season, metric))
+                    cur = con.execute(
+                        "UPDATE run_scores SET value = ? "
+                        "WHERE run = ? AND season = ? AND metric = ?",
+                        (new_val, run, season, metric),
+                    )
+                    if cur.rowcount != 1:
+                        raise RuntimeError(
+                            f"run {run} {season} {metric}: UPDATE touched "
+                            f"{cur.rowcount} row(s), expected 1."
+                        )
+                    if old is None:
+                        raise RuntimeError(
+                            f"run {run} {season} {metric}: no existing "
+                            "run_scores row to update."
+                        )
+                    changed.append((run, season, metric, old, new_val))
+        con.execute("COMMIT")
+
+        after_all = {
+            (int(row[0]), str(row[1]), str(row[2])): float(row[3])
+            for row in con.execute(
+                "SELECT run, season, metric, value FROM run_scores"
+            )
+        }
+    except Exception:
+        if con.in_transaction:
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()
+
+    print("\n=== Historical seed re-score (run_scores) ===\n")
+    print(f"Ranking key: {SEED_RANK_METHOD}")
+    if skipped:
+        print("Skipped:")
+        for run, reason in skipped:
+            print(f"  run {run}: {reason}")
+    else:
+        print("Skipped: none")
+
+    print(
+        f"\n{'run':>4}  {'section':<16}  {'metric':<22}  "
+        f"{'before':>10}  {'after':>10}  {'delta':>10}"
+    )
+    for run, season, metric, old, new in changed:
+        print(
+            f"{run:4d}  {season:<16}  {metric:<22}  "
+            f"{old:10.4f}  {new:10.4f}  {new - old:10.4f}"
+        )
+
+    moved = [
+        (key, before_all[key], after_all[key])
+        for key in before_all
+        if key[2] not in SEED_METRICS and before_all[key] != after_all.get(key)
+    ]
+    extra = [key for key in after_all if key not in before_all]
+    missing = [key for key in before_all if key not in after_all]
+    if moved or extra or missing:
+        raise RuntimeError(
+            f"non-seed run_scores changed: moved={moved} extra={extra} "
+            f"missing={missing}"
+        )
+    print(
+        "\nNon-seed run_scores values: unchanged "
+        f"({sum(1 for k in before_all if k[2] not in SEED_METRICS)} rows)."
     )
 
 
@@ -616,26 +934,9 @@ def main(note: str | None = None) -> None:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     con = sqlite3.connect(DB_PATH)
-    season_metrics: dict[str, SeasonMetrics] = {}
     try:
-        partial_note = "caveated / partial data"
-        for season in ALL_SEASONS:
-            notes = partial_note if season == PARTIAL_SEASON else ""
-            metrics = compute_season_metrics(con, season, notes=notes)
-            if metrics is None:
-                print(f"[warn] skipping {season}: missing predictions or actuals")
-                continue
-            season_metrics[season] = metrics
-
-        pooled = compute_pooled(con, season_metrics)
-        pooled_no_partial = compute_pooled(
-            con, {s: m for s, m in season_metrics.items() if s != PARTIAL_SEASON}
-        )
-        pooled_no_partial.notes = (
-            f"pooled over {len(BACKTEST_SEASONS)} full seasons "
-            f"({', '.join(BACKTEST_SEASONS)}); run_id={RUN_ID}"
-        )
-
+        sections = compute_all_sections(con)
+        dupes = count_duplicate_seed_assignments(con)
         baseline_scores = load_scores(con, "baseline_scores")
 
         baseline_backtest_metrics: dict[str, SeasonMetrics] = {}
@@ -651,6 +952,24 @@ def main(note: str | None = None) -> None:
         }
     finally:
         con.close()
+
+    if dupes:
+        raise RuntimeError(
+            f"conference ranking produced {dupes} duplicate seed assignment(s) "
+            "on backtest seasons; aborting."
+        )
+    print(
+        f"Seed rank method={SEED_RANK_METHOD}; "
+        f"duplicate assignments on backtest seasons: {dupes}"
+    )
+
+    season_metrics = {
+        season: metrics
+        for season, metrics in sections.items()
+        if season not in ("POOLED", "POOLED_NO_1819")
+    }
+    pooled = sections["POOLED"]
+    pooled_no_partial = sections["POOLED_NO_1819"]
 
     rows: list[tuple[str, str, float, str]] = []
     for season, metrics in season_metrics.items():
@@ -694,6 +1013,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Score and print only, writing no history record. This is the default.",
     )
+    parser.add_argument(
+        "--compare-seed-keys",
+        action="store_true",
+        help=(
+            "Print seed exact / ±1 for avg_wins vs expected-seed ranking "
+            "and exit without writing."
+        ),
+    )
+    parser.add_argument(
+        "--rescore-history",
+        action="store_true",
+        help=(
+            "Rewrite seed_accuracy_exact and seed_accuracy_pm1 in run_scores "
+            "from each complete frozen snapshot. Other metrics are untouched."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -706,4 +1041,15 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
         sys.exit(2)
+    if args.compare_seed_keys:
+        compare_seed_rank_methods()
+        sys.exit(0)
+    if args.rescore_history and args.note is not None:
+        print(
+            "[error] --rescore-history cannot be combined with --note.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if args.rescore_history:
+        rescore_historical_seed_metrics()
     main(note=args.note)
