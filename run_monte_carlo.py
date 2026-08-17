@@ -43,8 +43,10 @@ COACH_GRADE_MULT: dict[str, float] = {
 }
 PLAYSTYLE_FALLBACK_MULT = 0.90
 
-BT_EXPONENT = 1.0
-HOME_ODDS = 1.04
+# Swept k over 1.0/2.0/2.25/2.5/3.0/3.5/4.0 (runs 6-12).
+# HOME_ODDS set so equal teams give the real 58% home win rate (1.38 / 2.38).
+BT_EXPONENT = 2.25
+HOME_ODDS = 1.38
 FATIGUE_ODDS = 1.0416667
 AWAY_FATIGUE_PROB = 0.135
 
