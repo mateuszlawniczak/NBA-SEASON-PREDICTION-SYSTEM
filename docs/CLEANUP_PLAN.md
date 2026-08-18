@@ -1,12 +1,30 @@
 # EYEonPAPER — Cleanup & Consolidation Plan
 
 > Steps 2 & 3 of the audit. Keep/merge/archive/delete calls for every table and script,
-> then a leaner season-keyed schema. Evidence cited as `file.py:line`. **Nothing here has
-> been executed** — this is a specification.
+> then a leaner season-keyed schema. Evidence cited as `file.py:line`.
 
-"Live" = on the path from raw data to `simulation_results_25_26` or `app.py`.
-"Orphaned" = written but never read downstream. "Superseded" = duplicate of a newer
-script/table that owns the live output.
+**Status (2026-08):** most of this spec has been executed (Phases 0–1). The body below is
+the original audit snapshot and is left as historical spec. Completed vs still-open:
+
+| Item | Status |
+|------|--------|
+| Dead `team_simulation_pr` writers / table | ✅ done — deleted from the live path |
+| Canonical Base PR = `calculate_player_pr.py` (no GP penalty) | ✅ done — `calculate_base_pr.py` deleted |
+| Canonical MC = `run_monte_carlo.py` | ✅ done — `monte_carlo_season_25_26.py` deleted |
+| Canonical clutch = `build_composite_clutch_index.py` | ✅ done — `calculate_playoff_riser_choker.py` deleted |
+| Canonical effects = `init_yearly_player_effects.py` | ✅ done — `init_player_effects.py` deleted |
+| One-off scripts in `archive/` (off the live path) | ✅ done — `archive/` holds migration/fix scripts |
+| SQLite databases not git-tracked | ✅ done — `.gitignore` has `*.db` |
+| Season-keyed table names (`team_projection`, `simulation_results`, …) | ✅ done — Phase 1 |
+| `pipeline.py` orchestrator | ✅ done |
+| Fold `final_simulation_pr` into `ULTIMATE_PR` | ⬜ still spec — table still exists |
+| `pipeline.py --dry-run` / `requirements.txt` | ⬜ still spec |
+| Rename `player_starting_teams` → `roster_assignments` | ⬜ not done — kept `player_starting_teams` |
+
+"Live" in the original text meant the path to `simulation_results_25_26` or `app.py`. Those
+year-suffixed tables have since been renamed.
+
+---
 
 ---
 

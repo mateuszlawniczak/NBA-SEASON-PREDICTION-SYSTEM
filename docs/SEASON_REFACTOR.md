@@ -1,8 +1,27 @@
 # EYEonPAPER — Season Parameterization, Orchestrator & Backtesting
 
-> Steps 4, 5, 6 of the audit. Specification only — no code changes made. End state:
-> `pipeline.py --season 2024-25 --stage all` runs the full projection + simulation for
-> **any** target season, and `backtest.py` scores predictions against known results.
+> Steps 4, 5, 6 of the audit. The body below is the original specification snapshot.
+> **Status (2026-08):** the parameterization and backtest harness are in place; several
+> extras from this spec were never built.
+
+| Item | Status |
+|------|--------|
+| `season_utils.py` + `--season` as target, source = target − 1 | ✅ done |
+| Every pipeline step takes `(source_season, target_season)` | ✅ done |
+| `pipeline.py --season <target> --stage {features,projection,simulation,all}` | ✅ done |
+| Leakage guards (`leakage_guards.py`: FMVP, pedigree, summer hires, draft year) | ✅ done |
+| Continuity data-derived (not hardcoded team lists) | ✅ done |
+| Historical production sims 2018-19 → 2025-26 | ✅ done |
+| Scoring: `compute_baseline_scores.py` + `compute_engine_scores.py` (not a single `backtest.py`) | ✅ done |
+| `ingest` stage inside `pipeline.py` | ⬜ still spec — fetch stays offline |
+| `pipeline.py --dry-run` and `--from` resume | ⬜ still spec |
+| `requirements.txt` | ⬜ still spec |
+
+End state that **did** land: `pipeline.py --season 2025-26 --stage all` runs projection +
+simulation for any target season, and the two scoring scripts compare predictions to
+actuals already in the DB.
+
+---
 
 ---
 

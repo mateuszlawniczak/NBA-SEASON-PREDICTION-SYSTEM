@@ -5,60 +5,66 @@
 > as state changes — it holds the *present*, not history (history lives in git and
 > `EXPERIMENTS.md`).
 
-Last updated: 2026-08-04
+Last updated: 2026-08-18
 
 ---
 
 ## What to do next (read this first)
 
-You are in **Phase 4 — formula tuning.** Everything before it is done: the engine is
-multi-season, leakage-free, and scored against a baseline. The job now is to make the
-formula *more accurate* — and you can finally measure whether any change helps, because the
-backtest scorecard exists.
+**v2 is in place.** The 8-season backtest (2018-19 → 2025-26) is complete, Bradley-Terry
+defaults are locked at `k = 2.25` and home odds `1.38`, and every logged run is tied to a
+git commit in `runs` / `run_scores`. The next phase is **v3**.
+
+v2 already improved win-total prediction out-of-sample. It does **not** yet beat the
+baseline on seeding or champion prediction — that is the work v3 has to do.
 
 **Immediate next actions:**
-1. Build `FORMULA.md` (the constants cheat-sheet) and `EXPERIMENTS.md` (the change log) — the
-   two tracking files for this phase.
-2. Then start the tuning loop: change one thing → re-run the backtest → log the score effect
+1. Start v3 from the locked v2 defaults. Do not re-open `k` / home odds unless ranking
+   quality moves enough to justify a re-sweep (see the noise-floor note in
+   `docs/EXPERIMENTS.md`).
+2. Attack seed accuracy and champion metrics (Brier, top-4). Those are where the baseline
+   still wins.
+3. Keep the existing loop: one change → backtest → log in `EXPERIMENTS.md` / `run_scores`
    → keep or revert.
-3. First targets to investigate (see "Current focus" below): the champion prediction (0%
-   top-1) and the seed accuracy gap.
 
 ---
 
 ## The number that matters
 
-Current backtest, engine vs naive baseline ("predict last season's result"), pooled over the
-full-data seasons (2019-20 → 2024-25, 2018-19 excluded as thin-data):
+Current backtest, engine vs naive previous-season baseline. Pooled = all 8 seasons
+(2018-19 → 2025-26). Test = holdout 2024-25 and 2025-26.
 
-| Metric | Engine | Baseline | Who wins |
-|---|---|---|---|
-| MAE wins (↓) | **8.68** | 8.82 | engine (barely) |
-| Seed ±1 (↑) | 28.3% | 36.1% | baseline |
-| Champion top-1 (↑) | **0%** | 16.7% | baseline |
-| Champion top-4 (↑) | 33.3% | 50.0% | baseline |
-| Brier champion (↓) | 0.0321 | 0.0318 | ~tie |
+**Engine beats baseline**
 
-**Read:** the engine *barely* beats the baseline on win totals and loses on seeds and
-champion. That's the honest starting line — the target is to pull these numbers clearly
-past the baseline. Best single result so far: 2022-23 win MAE, −2.25 vs actual.
+| Metric | Pooled | Held-out test |
+|---|---|---|
+| MAE wins (↓) | **7.94** vs 8.51 | **8.80** vs 9.77 |
+| MAE win % (↓) | **9.91** vs 10.77 | **10.74** vs 11.91 |
+| Win-order r (↑) | **0.587** vs 0.552 | **0.605** vs 0.540 |
+
+**Baseline still wins**
+
+| Metric | Engine | Baseline |
+|---|---|---|
+| Exact seed % (↑) | 13.3% | **16.3%** |
+| Champion Brier (↓) | 0.0385 | **0.0317** |
+| Champion top-4 (↑) | 25% | **50%** |
+
+Locked-in MC defaults: `k = 2.25`, home odds `1.38` (`run_monte_carlo.py`).
 
 Scores are produced by `compute_baseline_scores.py` and `compute_engine_scores.py`
-(tables `baseline_scores`, `engine_scores`).
+(tables `baseline_scores`, `engine_scores`; history in `runs` / `run_scores`).
 
 ---
 
 ## Current focus / open questions
 
-- **Champion prediction is the biggest weakness (0% top-1).** Hypothesis: the model
-  over-trusts regular-season strength and under-weights playoff variance / the eye-test
-  effects (clutch, riser/choker, 8-man rotation) that are *supposed* to catch upsets. Test
-  whether those effects actually move the champion metric — if not, they may be miscalibrated.
-- **Seed accuracy below baseline.** Open question: is this a *metric-reading* problem (taking
-  the single most-likely seed from a probability distribution is fuzzy, while "same as last
-  year" is sharp) or a *formula* problem? Check the metric first — it may be a cheap fix.
-- **Run ablation on the eye-test effects** — turn each effect off, re-run the backtest, see
-  which actually improve accuracy vs which are dead weight or harmful.
+- **Seeding and champion prediction are the remaining gaps.** The engine is ahead on
+  win totals out-of-sample and behind on exact seed, champion Brier, and champion top-4.
+- **v3 is the next phase** — formula work against those three losses, with the v2
+  backtest harness and experiment log already in place.
+- Run ablation on the eye-test effects remains useful: turn each effect off, re-run the
+  backtest, see which actually improve accuracy vs which are dead weight or harmful.
 
 ---
 
@@ -75,6 +81,9 @@ Scores are produced by `compute_baseline_scores.py` and `compute_engine_scores.p
   overlap ≥70% HIGH / 50–70% DEFAULT / <50% LOW. This deliberately changed the 2025-26
   baseline (the old hand-typed lists had teams like DET/SAC backwards).
 - **Delete dead code, don't archive** — git history is the archive.
+- **Bradley-Terry defaults locked:** `k = 2.25`, home odds `1.38` (fatigue is an odds
+  multiplier outside the exponent). Experiment history is append-only in `runs` /
+  `run_scores` and `docs/EXPERIMENTS.md`.
 
 ---
 
@@ -95,19 +104,18 @@ Scores are produced by `compute_baseline_scores.py` and `compute_engine_scores.p
   coach fetch scripts (13 scripts total, several feeding predictions), so it's a
   multi-session task that risks the backtest baseline — deferred until a genuinely new
   season needs fetching. `fetch_player_stats.py` (Script 1) exists as a starting point if
-  resumed. **Active phase remains Phase 4 — formula tuning; this is explicitly not the
-  current focus.**
-- **`fetch_player_starting_teams_25_26.py` deleted** (dead code, verified). Deletion staged in
-  git, commit pending.
+  resumed.
+- **`fetch_player_starting_teams_25_26.py` deleted** (dead code, verified). Multi-season
+  roster builds use `fetch_player_starting_teams.py`.
 
 ---
 
 ## Document map (which file answers which question)
 
-- **README.md** — what the project is and why (the pitch).
+- **README.md** — what the project is and why (the pitch), plus current results.
 - **docs/progress.md** (this file) — where I am right now + next action + score + decisions.
-- **docs/FORMULA.md** — the current formula constants/weights (what I can turn). *(to build)*
-- **docs/EXPERIMENTS.md** — log of every formula change → its score effect → kept/reverted. *(to build)*
+- **docs/FORMULA.md** — the current formula constants/weights (what I can turn).
+- **docs/EXPERIMENTS.md** — log of every formula change → its score effect → kept/reverted.
 - **docs/ARCHITECTURE.md** — how the code/data is wired (the technical map).
 - **docs/ROADMAP.md** — the full phased plan and where each phase stands.
 - **docs/CLEANUP_PLAN.md**, **docs/SEASON_REFACTOR.md** — specs for completed work (historical).

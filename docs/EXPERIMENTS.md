@@ -94,7 +94,7 @@ threshold is dice, not signal:
   Seed ±1 %             2.4
   Playoff berth %       1.0
   Brier                 0.0004
-  Champion top-1/top-4  move only in 14.3% steps (7 seasons)
+  Champion top-1/top-4  move only in 12.5% steps (8 seasons)
   pooled predicted sd   0.037
 
 k must be re-swept after any change that improves ranking quality, because the

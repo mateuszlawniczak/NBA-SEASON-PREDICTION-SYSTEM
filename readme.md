@@ -35,12 +35,43 @@ second round. This defeats the "rotation blindness" of models that use a flat 12
 **Bradley-Terry win probability.** Every game is decided by:
 
 ```
-P(Home Win) = (Rating_home × 1.04) / (Rating_home × 1.04 + Rating_away × Fatigue)
+home_term   = HOME_ODDS × F × (Rating_home ^ k)
+P(Home Win) = home_term / (home_term + Rating_away ^ k)
 ```
 
-with a constant 1.04 home-court multiplier, a 13.5% chance of a -4% back-to-back fatigue
-penalty, and a continuity-decay multiplier over the first 20 games to model new-roster
-gelling.
+Home advantage and fatigue are odds multipliers **outside** the exponent, so `k` can be
+swept without silently rescaling either. Locked-in defaults (`run_monte_carlo.py`):
+`k = 2.25`, `HOME_ODDS = 1.38`. On 13.5% of games the away team is fatigued and
+`F = 1.0416667` (else `F = 1`). A continuity-decay multiplier still applies over the first
+20 regular-season games to model new-roster gelling.
+
+---
+
+## Results
+
+Backtest: 8 seasons (2018-19 → 2025-26), scored against a naive previous-season baseline,
+with a train/test split (train 2019-20 → 2023-24; holdout 2024-25 and 2025-26). 2018-19 is
+included in the pooled row below and excluded from train and test.
+
+**Where the engine beats the baseline**
+
+| Metric | Pooled (8 seasons) | Held-out test |
+|--------|--------------------|---------------|
+| Mean absolute error, team wins (↓) | **7.94** vs 8.51 | **8.80** vs 9.77 |
+| Mean absolute error, win % (↓) | **9.91** vs 10.77 | **10.74** vs 11.91 |
+| Win-order correlation (↑) | **0.587** vs 0.552 | **0.605** vs 0.540 |
+
+**Where the baseline still wins**
+
+| Metric | Engine | Baseline |
+|--------|--------|----------|
+| Exact seed accuracy (↑) | 13.3% | **16.3%** |
+| Champion Brier score (↓) | 0.0385 | **0.0317** |
+| Champion top-4 hit rate (↑) | 25% | **50%** |
+
+The engine improves season win-total prediction out-of-sample. It does not yet beat the
+baseline on seeding or champion prediction. Results are reproducible: every logged run is
+tied to a git commit in the `runs` and `run_scores` tables.
 
 ---
 
@@ -102,6 +133,18 @@ can experiment with.
 - **Interface:** Streamlit
 - **Math:** Bradley-Terry modeling, binomial distribution for injury logic, Monte Carlo
   simulation
+
+---
+
+## Version history
+
+**v1 (May 2026)** — the Monte Carlo engine: 1,000 simulations, eye-test effect library,
+injury logic, 9-man/8-man rotations. No validation.
+
+**v2 (August 2026)** — validation and tuning: 8-season backtest vs baseline with a
+train/test split, Bradley-Terry exponent sweep with locked-in defaults (`k = 2.25`,
+home odds `1.38`), data-integrity healing for 2017–20, leakage guards, run logging tied
+to git commits, and a Streamlit dashboard.
 
 ---
 

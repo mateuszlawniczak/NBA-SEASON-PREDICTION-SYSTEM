@@ -1,8 +1,7 @@
 # EYEonPAPER — Phased Roadmap
 
-> Updated to reflect **actual** project status (2026-08-04). See `docs/ARCHITECTURE.md`
-> for the live technical map and `docs/PROGRESS.md` for the decision log (note: PROGRESS
-> predates Phases 1–3 completion — trust this file and ARCHITECTURE for current phase).
+> Updated to reflect **actual** project status (2026-08-18). See `docs/ARCHITECTURE.md`
+> for the live technical map and `docs/progress.md` for the present-state pin.
 
 Each phase was designed to leave the repo in a **working state**. Phases 0–3 are complete;
 **Phase 4 (formula tuning) is the active work.**
@@ -14,7 +13,7 @@ Each phase was designed to leave the repo in a **working state**. Phases 0–3 a
 | 0 — Cleanup & safety net | ✅ DONE | Dead scripts/tables removed; `pipeline.py` orchestrator |
 | 1 — Schema consolidation | ✅ DONE | Season-keyed tables; `_25_26` names migrated |
 | 2 — Season parameterization | ✅ DONE | `--season` end-to-end; leakage guards; historical sims |
-| 3 — Backtesting harness | ✅ DONE | Baseline + engine scoring across 7 seasons |
+| 3 — Backtesting harness | ✅ DONE | Baseline + engine scoring across 8 seasons |
 | 4 — Formula work | 🔄 CURRENT | Tune formulas to beat baseline convincingly |
 | 5 — Stretch (post-formula) | ⬜ FUTURE | UI polish, market comparison |
 
@@ -90,24 +89,31 @@ objective function for formula work.
 - `compute_engine_scores.py` — engine output from `simulation_results`
   (`run_id='production'`) → `engine_scores`, with side-by-side comparison
 
-**Metrics:** MAE wins, seed exact %, seed ±1 %, playoff berth %, champion top-1 %,
-champion top-4 %, Brier (champion). Scored across **2018-19** (partial) +
-**2019-20 → 2024-25** (7 full backtest seasons).
+**Metrics:** MAE wins, MAE win %, seed exact %, seed ±1 %, playoff berth %, champion top-1 %,
+champion top-4 %, Brier (champion), win-order r, champion rank. Scored across **2018-19**
+(partial) + **2019-20 → 2025-26** (8 seasons), with train (2019-20 → 2023-24) and holdout
+test (2024-25, 2025-26) pooled sections.
 
 **DoD (met):** Baseline and engine scores persisted and reproducible; pooled comparison
-printed on every `compute_engine_scores.py` run.
+printed on every `compute_engine_scores.py` run. Logged runs are append-only in `runs` /
+`run_scores`, each tied to a git commit.
 
-**Headline result (POOLED excl. 2018-19, 7 seasons — run 2026-08-03):**
+**Headline result (POOLED, 8 seasons 2018-19 → 2025-26):**
 
 | Metric | Baseline | Engine | Winner |
 |--------|----------|--------|--------|
-| MAE wins | 8.82 | **8.68** | engine (barely) |
-| Seed exact % | 13.9 | 11.7 | baseline |
-| Champion top-1 % | 16.7 | **0.0** | baseline |
-| Champion top-4 % | 50.0 | 33.3 | baseline |
+| MAE wins | 8.51 | **7.94** | engine |
+| MAE win % | 10.77 | **9.91** | engine |
+| Win-order r | 0.552 | **0.587** | engine |
+| Exact seed % | **16.3** | 13.3 | baseline |
+| Champion Brier | **0.0317** | 0.0385 | baseline |
+| Champion top-4 % | **50.0** | 25.0 | baseline |
 
-The engine edges the naive baseline on wins but **does not yet beat it convincingly**;
-champion prediction and seed accuracy are the weakest areas.
+Held-out test (2024-25, 2025-26): MAE wins **8.80** vs 9.77; MAE win % **10.74** vs 11.91;
+win-order r **0.605** vs 0.540.
+
+The engine improves season win-total prediction out-of-sample. It does **not** yet beat
+the baseline on seeding or champion prediction.
 
 ---
 
@@ -116,8 +122,10 @@ champion prediction and seed accuracy are the weakest areas.
 **Goal:** improve projection and simulation formulas using the Phase 3 scoreboard as the
 objective function — beat the naive baseline **convincingly**, not marginally.
 
-**Current state:** Active tuning phase. Engine wins on pooled MAE (8.68 vs 8.82) but loses
-on seed accuracy and champion metrics; champion top-1 is **0%** across all 7 full seasons.
+**Current state:** Active tuning phase. Locked-in MC defaults: `k = 2.25`, home odds
+`1.38`. Engine wins on pooled MAE wins (7.94 vs 8.51) and win-order r (0.587 vs 0.552),
+including on held-out test seasons, but loses on exact seed (13.3% vs 16.3%), champion
+Brier (0.0385 vs 0.0317), and champion top-4 (25% vs 50%).
 
 **Sub-goals (in flight):**
 
@@ -128,12 +136,13 @@ on seed accuracy and champion metrics; champion top-1 is **0%** across all 7 ful
 3. **Ablation on eye-test effects** — toggle or reweight `player_special_effects`,
    pedigree boost, clutch index, coach/playstyle/continuity multipliers; measure each
    change via `compute_engine_scores.py`.
-4. **Experiment logging** — record `(change, pooled metrics, per-season breakdown)` so
-   formula iterations are comparable (table, doc, or lightweight log — TBD).
+4. **Experiment logging** — ✅ done. Each logged run appends to `runs` / `run_scores`
+   (git commit stored on `runs.git_commit`) and to `docs/EXPERIMENTS.md`. History is
+   append-only.
 
 **DoD:** Pooled engine scores beat baseline on MAE wins **and** at least two of: seed ±1,
 playoff berth %, champion top-1, champion Brier — with no metric regressing by more than
-a agreed tolerance. Champion top-1 must be **> 0%** on the 7-season window.
+a agreed tolerance. Champion top-1 must be **> 0%** on the 8-season window.
 
 ---
 

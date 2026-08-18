@@ -1902,9 +1902,9 @@ def view_creator(col_main, col_filters) -> None:
     with col_filters:
         st.markdown('<div class="eop-eyebrow">Connect</div>', unsafe_allow_html=True)
         st.markdown(
-            "- [GitHub](https://github.com/your-handle)\n"
-            "- [LinkedIn](https://linkedin.com/in/your-handle)\n"
-            "- [Email](mailto:you@example.com)"
+            "- [GitHub](https://github.com/mateuszlawniczak)\n"
+            "- [LinkedIn](https://www.linkedin.com/in/mateuszlawniczak/)\n"
+            "- [Email](mailto:mateuszlawniczakcontact@gmail.com)"
         )
  
     with col_main:
@@ -1915,7 +1915,7 @@ def view_creator(col_main, col_filters) -> None:
         )
         st.markdown(
             """
-**[Your Name]** — Data Analyst
+**Mateusz Ławniczak** — Data Analyst
  
 I build predictive systems that turn messy sports data into decisions you can
 defend. EYE ON PAPER is my NBA engine: a Monte-Carlo simulator that fuses player
@@ -1928,9 +1928,6 @@ odds.
 - This Streamlit front end — stateless, read-only, and shareable
  
 **Stack:** Python · pandas · NumPy · SQLite · Streamlit
- 
-*Replace the links on the right and this bio with your own details before
-shipping.*
             """
         )
  

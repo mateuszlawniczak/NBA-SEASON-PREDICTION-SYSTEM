@@ -22,9 +22,9 @@ variance — prioritize them when attacking 0% champion top-1 and weak seed metr
 | PO star boost (top 3 × 1.15) | `STAR_BOOST = 1.15`, top 3 | `build_team_playoff_pr_25_26.py:46-47,416-418` | Inflates team `base_8man_pr` |
 | PO coach amplify | `COACH_AMPLIFY = 1.5` | `build_team_playoff_pr_25_26.py:47,521` | `amp_coach = 1 + (coach−1)×1.5` |
 | Continuity multipliers + overlap gates | 1.05 / 1.00 / 0.95; 0.70 / 0.50 | `build_team_playoff_pr_25_26.py:49-55` | RS early-season + full PO multiplier |
-| MC PO star boost (in-series) | `STAR_BOOST_PO = 1.15`, top 3 | `run_monte_carlo.py:49-50,289-295` | Playoff game win probability |
-| MC home / fatigue | 1.04 / 0.96 @ 13.5% | `run_monte_carlo.py:45-47` | Regular-season standings |
-| MC continuity decay window | games 1–20 only (RS) | `run_monte_carlo.py:52,365-366` | Early-season RS only |
+| MC PO star boost (in-series) | `STAR_BOOST_PO = 1.15`, top 3 | `run_monte_carlo.py:53-54,294-297` | Playoff game win probability |
+| MC k / home odds / fatigue | `k=2.25`, home `1.38`, `F=1.0416667` @ 13.5% | `run_monte_carlo.py:48-51,378-395` | Odds multipliers sit outside the exponent |
+| MC continuity decay window | games 1–20 only (RS) | `run_monte_carlo.py:56,369` | Early-season RS only |
 | Special-effect point bonuses | +2 to +6 | `calculate_final_simulation_pr.py:21-30` | Top-end player separation |
 | Pedigree ROY boosts | 1.20 / 1.10 per player | `leakage_guards.py:29-43` | Applied in `apply_pedigree_trajectory_boost.py` |
 
@@ -40,7 +40,7 @@ ast_score  = ast + ((ast / max(tov, 1.0)) * 2.5)
 def_score  = ((stl + blk) * 3.0) + deflections
 reb_score  = (dreb + (oreb * 3.0)) * 0.7
 raw_impact = pts_score + ast_score + def_score + reb_score
-base_pr    = round(raw_impact * ((mpg / MPG_REF) ** MPG_CURVE_EXP))
+base_pr    = raw_impact * ((mpg / MPG_REF) ** MPG_CURVE_EXP)
 ```
 
 | Constant / knob | Current value | File:line | What it controls |
@@ -64,7 +64,7 @@ base_pr    = round(raw_impact * ((mpg / MPG_REF) ** MPG_CURVE_EXP))
 
 ## 2. Age progression — `apply_progression.py`
 
-**Formula:** `projected_pr = round(base_pr × aging_multiplier(age))`
+**Formula:** `projected_pr = base_pr × aging_multiplier(age)`
 
 | Constant / knob | Current value | File:line | What it controls |
 |-----------------|---------------|-----------|------------------|
@@ -314,21 +314,31 @@ default when missing is `1.00` not `0.90` (`build_team_playoff_pr_25_26.py:44,52
 
 | Constant / knob | Current value | File:line | What it controls |
 |-----------------|---------------|-----------|------------------|
-| `N_SIMULATIONS` | `1000` | `run_monte_carlo.py:31` | MC run count |
-| `RS_GAMES_PER_TEAM` | `82` | `run_monte_carlo.py:32` | Regular-season games per team |
-| `N_TEAMS` | `30` | `run_monte_carlo.py:33` | League size |
+| `N_SIMULATIONS` | `1000` | `run_monte_carlo.py:32` | MC run count |
+| `RS_GAMES_PER_TEAM` | `82` | `run_monte_carlo.py:33` | Regular-season games per team |
+| `N_TEAMS` | `30` | `run_monte_carlo.py:34` | League size |
 | `DEFAULT_RUN_ID` | `"production"` | `run_monte_carlo.py:30` | Results table key |
-| Master RNG seed | `20260514` | `run_monte_carlo.py:884` | Reproducible sim stream |
+| Master RNG seed | `20260514` | `run_monte_carlo.py:31,892` | Reproducible sim stream |
 
-### Bradley-Terry / home-court (not labeled BT in code — ratio win draw)
+### Bradley-Terry / home-court
+
+Home advantage and fatigue multiply the **odds** outside the exponent (`p_win_home`):
+
+```
+home_term = HOME_ODDS × F × (rating_home ** k)
+P(home)   = home_term / (home_term + rating_away ** k)
+```
+
+`F = FATIGUE_ODDS` when the away team is fatigued, else `1.0`.
 
 | Constant / knob | Current value | File:line | What it controls |
 |-----------------|---------------|-----------|------------------|
-| `HOME_MULT` | `1.04` | `run_monte_carlo.py:45` | Home team rating multiplier |
-| `AWAY_FATIGUE_MULT` | `0.96` | `run_monte_carlo.py:46` | Away team penalty when fatigued |
-| `AWAY_FATIGUE_PROB` | `0.135` | `run_monte_carlo.py:47` | Per-game fatigue roll probability |
-| Win probability tiebreak | `random * (rh + ra) < rh` | `run_monte_carlo.py:382-385` | Stochastic BT draw |
-| Zero-rating tie | `50%` coin flip | `run_monte_carlo.py:383-384` | When `rh + ra <= 0` |
+| `BT_EXPONENT` (`k`) | `2.25` | `run_monte_carlo.py:48` | Bradley-Terry exponent |
+| `HOME_ODDS` | `1.38` | `run_monte_carlo.py:49` | Home odds multiplier (outside `k`) |
+| `FATIGUE_ODDS` | `1.0416667` | `run_monte_carlo.py:50` | Home-odds bump when away is fatigued |
+| `AWAY_FATIGUE_PROB` | `0.135` | `run_monte_carlo.py:51` | Per-game away-fatigue roll |
+| Win probability draw | `random * denom < home_term` | `run_monte_carlo.py:391-395` | Stochastic BT draw |
+| Zero-rating tie | `50%` coin flip | `run_monte_carlo.py:393-394` | When `denom <= 0` |
 
 ### RS team rating
 
@@ -337,9 +347,9 @@ default when missing is `1.00` not `0.90` (`build_team_playoff_pr_25_26.py:44,52
 | Constant / knob | Current value | File:line | What it controls |
 |-----------------|---------------|-----------|------------------|
 | Daily rotation size | `9` contributors | `run_monte_carlo.py:279-286` | RS active players per game |
-| `CONTINUITY_CUTOFF_GAME` | `20` | `run_monte_carlo.py:52` | Last RS game with continuity mult |
-| Continuity after game 20 | `1.0` (off) | `run_monte_carlo.py:365-366` | RS late-season |
-| Play-in neutral continuity | `CONTINUITY_CUTOFF_GAME + 1` (21) | `run_monte_carlo.py:484-485` | Continuity off for play-in |
+| `CONTINUITY_CUTOFF_GAME` | `20` | `run_monte_carlo.py:56` | Last RS game with continuity mult |
+| Continuity after game 20 | `1.0` (off) | `run_monte_carlo.py:369` | RS late-season |
+| Play-in neutral continuity | `CONTINUITY_CUTOFF_GAME + 1` (21) | `run_monte_carlo.py:495-496` | Continuity off for play-in |
 | RS depth: starter slots | 2G + 2F + 1C | `run_monte_carlo.py:149-151` | Starting five by position |
 | RS depth: bench slots | 1G + 1F + 1 (C or F) | `run_monte_carlo.py:156-175` | Bench three |
 | RS depth: ninth man | best remaining | `run_monte_carlo.py:177-180` | 9th contributor |
@@ -351,8 +361,8 @@ default when missing is `1.00` not `0.90` (`build_team_playoff_pr_25_26.py:44,52
 
 | Constant / knob | Current value | File:line | What it controls |
 |-----------------|---------------|-----------|------------------|
-| `STAR_BOOST_PO` | `1.15` | `run_monte_carlo.py:49` | Top playoff PR in 8-man sum |
-| `TOP_BOOSTED_N` | `3` | `run_monte_carlo.py:50` | Count of PO star boosts |
+| `STAR_BOOST_PO` | `1.15` | `run_monte_carlo.py:53` | Top playoff PR in 8-man sum |
+| `TOP_BOOSTED_N` | `3` | `run_monte_carlo.py:54` | Count of PO star boosts |
 | PO series rotation freeze | 9 players, roll once | `run_monte_carlo.py:298-351` | Series-long availability |
 | Playoff series length | best-of-7, first to `4` wins | `run_monte_carlo.py:410-420` | Bracket rounds |
 | Home game pattern (higher seed) | games `{0,1,4,6}` | `run_monte_carlo.py:408-415` | HCA schedule in series |
