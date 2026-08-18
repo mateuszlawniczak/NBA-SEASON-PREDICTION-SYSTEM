@@ -103,8 +103,24 @@ Qualitative-to-Quantitative (Q2Q) layer:
 
 ## Live dashboard
 
-A **Streamlit** app presents the current simulation results — projected standings, seeds,
-playoff odds, and championship probabilities — in an interactive interface.
+## Live dashboard
+
+A **Streamlit** app (`app.py`) turns the engine from a script into something you can
+actually interrogate. Six working pages:
+
+- **My System** — projected standings, seeds, playoff odds and championship
+  probabilities, filterable by team and position.
+- **Adjust Variables** — change formula inputs in the browser and watch projections
+  move. The tuning loop, made visible.
+- **Current Formula** — the live parameter set, rendered from the code that runs, so
+  the documentation can't drift from the model.
+- **Me vs Baseline** — engine accuracy against the naive baseline, season by season
+  and metric by metric. Wins and losses both shown.
+- **Progress** — every logged run tracked over time, so formula changes are compared
+  against each other rather than judged by feel.
+- **Creator** — background and contact.
+
+Built as a stateless, read-only, shareable front end — no write path to the database.
 
 ---
 
@@ -138,14 +154,53 @@ can experiment with.
 
 ## Version history
 
-**v1 (May 2026)** — the Monte Carlo engine: 1,000 simulations, eye-test effect library,
-injury logic, 9-man/8-man rotations. No validation.
+**v1 — May 2026 · the engine.**
+1,000-run Monte Carlo simulation of a full NBA season and playoffs. The eye-test effect
+library (coaching multiplier, playoff riser/choker index, clutch engine, defensive
+gravity), daily injury rolls from real durability history, positional "next man up"
+backfill, and 9-man regular-season vs 8-man playoff rotations. A complete simulator —
+but with no way to tell whether its numbers were any good.
 
-**v2 (August 2026)** — validation and tuning: 8-season backtest vs baseline with a
-train/test split, Bradley-Terry exponent sweep with locked-in defaults (`k = 2.25`,
-home odds `1.38`), data-integrity healing for 2017–20, leakage guards, run logging tied
-to git commits, and a Streamlit dashboard.
+**v2 — August 2026 · validation, tuning, and a product.**
+The version that asks whether v1 was right.
 
+- **Backtesting harness** — `compute_baseline_scores.py` and `compute_engine_scores.py`
+  score engine vs a naive previous-season baseline across 8 seasons (2018-19 → 2025-26),
+  on ten metrics, with a train/holdout split.
+- **Formula tuning, measured** — home advantage and fatigue moved outside the
+  Bradley-Terry exponent so `k` could be swept independently; k sweep run across
+  1.0–4.0; `k = 2.25` and home odds `1.38` locked in against measured noise floor.
+- **Reproducibility** — `runs` and `run_scores` tables tie every logged run to its git
+  commit, so no result is orphaned from the code that produced it.
+- **Data integrity** — the `heal_pass` module: cross-season audits, content-hash
+  fingerprinting, healing of 2017-20 seasons, playoff-result backfill, and
+  `leakage_guards.py` to block lookahead bias.
+- **Data-derived logic** — hardcoded continuity tiers replaced with a top-2 gate and
+  roster-overlap measure computed from the data.
+- **The dashboard** — six-page Streamlit front end (above), including live variable
+  tuning and the baseline comparison.
+- **Documentation** — architecture, formula reference with `file.py:line` citations,
+  and an append-only experiments log.
+
+**v3 — planned · back to the thesis.**
+
+- **Rebuild the Player Rating system.** The premise of this project is in its name:
+  put the eye test on paper. In practice the current PR is still driven mostly by the
+  box score, with the eye-test layer sitting on top as a thin set of modifiers rather
+  than as the foundation. That's the gap between what this engine claims to be and
+  what it currently is, and closing it is v3's main job — rebuilding PR so
+  scouting-level signal is a first-class input, not a correction applied afterwards.
+- **Beat the market, not just the baseline.** A naive previous-season baseline is the
+  right first opponent; it is not the real one. The target is competitiveness with
+  Vegas — scoring engine championship and win-total projections against betting
+  markets and ELO-style benchmarks where historical odds exist.
+- **Close the seeding gap.** v2 beats the baseline on win totals but not on exact seed
+  or champion prediction. That's the next problem to solve, not one to hide.
+- **What If? engine** — reshape a roster in the browser (trades, injuries, signings,
+  cuts) and re-run the full season against the new reality.
+- **Draft & talent projection** — in the second-apron era, contention increasingly
+  rests on cheap rookie-scale talent, which is exactly the tier the market misprices.
+  Better draft projection means better contention projection.
 ---
 
 ## Author
