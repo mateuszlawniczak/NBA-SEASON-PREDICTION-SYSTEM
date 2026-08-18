@@ -60,21 +60,51 @@ def fint(v: Any) -> int | None:
         return None
 
 
-def ensure_projected_table(con: sqlite3.Connection) -> None:
+CREATE_PROJECTED_PR = """
+CREATE TABLE IF NOT EXISTS player_projected_pr (
+    player_name   TEXT    NOT NULL,
+    team          TEXT,
+    season        TEXT    NOT NULL,
+    age           INTEGER NOT NULL,
+    base_pr       REAL    NOT NULL,
+    multiplier    REAL    NOT NULL,
+    projected_pr  REAL    NOT NULL,
+    PRIMARY KEY (player_name, season)
+);
+"""
+
+
+def _widen_pr_columns(con: sqlite3.Connection) -> None:
+    """Recreate player_projected_pr if base_pr / projected_pr still have INTEGER affinity."""
+    exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='player_projected_pr'"
+    ).fetchone()
+    if exists is None:
+        con.execute(CREATE_PROJECTED_PR)
+        return
+    types = {
+        str(row[1]): str(row[2] or "").upper()
+        for row in con.execute("PRAGMA table_info(player_projected_pr)")
+    }
+    if not any(types.get(col, "").startswith("INT") for col in ("base_pr", "projected_pr")):
+        return
+    old_cols = [str(row[1]) for row in con.execute("PRAGMA table_info(player_projected_pr)")]
+    con.execute("ALTER TABLE player_projected_pr RENAME TO player_projected_pr__old")
+    con.execute(CREATE_PROJECTED_PR.replace("IF NOT EXISTS ", ""))
+    new_cols = [str(row[1]) for row in con.execute("PRAGMA table_info(player_projected_pr)")]
+    shared = [col for col in new_cols if col in old_cols]
+    col_sql = ", ".join(shared)
     con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS player_projected_pr (
-            player_name   TEXT    NOT NULL,
-            team          TEXT,
-            season        TEXT    NOT NULL,
-            age           INTEGER NOT NULL,
-            base_pr       INTEGER NOT NULL,
-            multiplier    REAL    NOT NULL,
-            projected_pr  INTEGER NOT NULL,
-            PRIMARY KEY (player_name, season)
-        );
-        """
+        f"INSERT INTO player_projected_pr ({col_sql}) "
+        f"SELECT {col_sql} FROM player_projected_pr__old"
     )
+    con.execute("DROP TABLE player_projected_pr__old")
+    con.commit()
+
+
+def ensure_projected_table(con: sqlite3.Connection) -> None:
+    _widen_pr_columns(con)
+    con.execute(CREATE_PROJECTED_PR)
 
 
 def load_base_with_age(con: sqlite3.Connection, source_season: str) -> list[dict[str, Any]]:
@@ -87,7 +117,7 @@ def load_base_with_age(con: sqlite3.Connection, source_season: str) -> list[dict
         p.player_name AS player_name,
         p.team AS team,
         p.season AS season,
-        CAST(p.base_pr AS INTEGER) AS base_pr,
+        p.base_pr AS base_pr,
         (
           SELECT b.age
           FROM player_stats_basic AS b
@@ -110,7 +140,7 @@ def load_base_with_age(con: sqlite3.Connection, source_season: str) -> list[dict
 
 def print_table(
     title: str,
-    rows: list[tuple[str, int, int, float, int]],
+    rows: list[tuple[str, int, float, float, float]],
 ) -> None:
     """rows: (player_name, age, base_pr, multiplier, projected_pr)."""
     cw = (22, 4, 8, 11, 12)
@@ -124,8 +154,8 @@ def print_table(
     print("-" * len(hdr), flush=True)
     for name, age, base, mult, proj in rows:
         print(
-            f"{name:<{cw[0]}} | {age:>{cw[1]}} | {base:>{cw[2]}} | "
-            f"{mult:>{cw[3]}.2f} | {proj:>{cw[4]}}",
+            f"{name:<{cw[0]}} | {age:>{cw[1]}} | {base:>{cw[2]}.2f} | "
+            f"{mult:>{cw[3]}.2f} | {proj:>{cw[4]}.2f}",
             flush=True,
         )
     print(flush=True)
@@ -149,7 +179,7 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
 
         missing_age = 0
         out_rows: list[
-            tuple[str, str, str, int, int, float, int, int]
+            tuple[str, str, str, int, float, float, float, float]
         ] = []  # + delta for sort
 
         for row in raw:
@@ -158,7 +188,7 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
                 continue
             name_s = str(name).strip()
             team = str(row.get("team") or "").strip()
-            base = fint(row.get("base_pr"))
+            base = ffloat(row.get("base_pr"))
             if base is None:
                 continue
 
@@ -168,7 +198,7 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
                 continue
 
             mult = aging_multiplier(age_i)
-            projected = int(round(base * mult))
+            projected = base * mult
             delta = projected - base
             out_rows.append((name_s, team, source_season, age_i, base, mult, projected, delta))
 

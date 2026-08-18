@@ -16,7 +16,7 @@ Per-game pillars (``era_avg_ts`` = 0.58):
   reb_score  = (dreb + (oreb * 3.0)) * 0.7
 
   raw_impact = pts_score + ast_score + def_score + reb_score
-  base_pr    = round(raw_impact * ((mpg / 30.0) ** 0.65))
+  base_pr    = raw_impact * ((mpg / 30.0) ** 0.65)
 """
 
 from __future__ import annotations
@@ -128,7 +128,7 @@ def load_rows(con: sqlite3.Connection, source_season: str) -> list[dict[str, Any
         con.row_factory = prev
 
 
-def compute_row(row: dict[str, Any]) -> tuple[int, float, float] | None:
+def compute_row(row: dict[str, Any]) -> tuple[float, float, float] | None:
     """Returns (base_pr, mpg, raw_impact) or None."""
     gp = fint(row.get("gp")) or 0
     if gp <= 0:
@@ -166,12 +166,12 @@ def compute_row(row: dict[str, Any]) -> tuple[int, float, float] | None:
 
     raw_impact = pts_score + ast_score + def_score + reb_score
     mpg_factor = (mpg / MPG_REF) ** MPG_CURVE_EXP
-    base_pr = int(round(raw_impact * mpg_factor))
+    base_pr = raw_impact * mpg_factor
 
     return base_pr, mpg, raw_impact
 
 
-def print_top_audit(rows: list[tuple[str, str, float, float, int]], source_season: str) -> None:
+def print_top_audit(rows: list[tuple[str, str, float, float, float]], source_season: str) -> None:
     """rows: (player, team, mpg, raw_impact, base_pr)."""
     col_w = (22, 5, 6, 11, 8)
     header = (
@@ -188,14 +188,14 @@ def print_top_audit(rows: list[tuple[str, str, float, float, int]], source_seaso
     for pn, tm, mpg, ri, pr in rows:
         print(
             f"{pn:<{col_w[0]}} | {tm:<{col_w[1]}} | {mpg:>{col_w[2]}.1f} | "
-            f"{ri:>{col_w[3]}.1f} | {pr:>{col_w[4]}}",
+            f"{ri:>{col_w[3]}.1f} | {pr:>{col_w[4]}.2f}",
             flush=True,
         )
     print(flush=True)
 
 
 def print_bench_elite_audit(
-    rows: list[tuple[str, str, float, float, int]], source_season: str
+    rows: list[tuple[str, str, float, float, float]], source_season: str
 ) -> None:
     """rows: (player, team, mpg, raw_impact, base_pr), already filtered mpg < cutoff."""
     col_w = (22, 5, 6, 11, 8)
@@ -213,7 +213,7 @@ def print_bench_elite_audit(
     for pn, tm, mpg, ri, pr in rows:
         print(
             f"{pn:<{col_w[0]}} | {tm:<{col_w[1]}} | {mpg:>{col_w[2]}.1f} | "
-            f"{ri:>{col_w[3]}.1f} | {pr:>{col_w[4]}}",
+            f"{ri:>{col_w[3]}.1f} | {pr:>{col_w[4]}.2f}",
             flush=True,
         )
     print(flush=True)
@@ -242,8 +242,8 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
             (source_season,),
         )
 
-        rows_out: list[tuple[str, str, str, int, int, float]] = []
-        report: list[tuple[str, str, float, float, int]] = []
+        rows_out: list[tuple[str, str, str, float, int, float]] = []
+        report: list[tuple[str, str, float, float, float]] = []
 
         for row in raw_rows:
             pn = row.get("player_name")

@@ -33,11 +33,37 @@ CREATE_FINAL_SIMULATION_PR = """
 CREATE TABLE IF NOT EXISTS final_simulation_pr (
     player_name     TEXT NOT NULL,
     season          TEXT NOT NULL,
-    final_pr        INTEGER NOT NULL,
+    final_pr        REAL NOT NULL,
     applied_effects TEXT NOT NULL,
     PRIMARY KEY (player_name, season)
 );
 """
+
+
+def _widen_final_pr(con: sqlite3.Connection) -> None:
+    exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='final_simulation_pr'"
+    ).fetchone()
+    if exists is None:
+        return
+    types = {
+        str(row[1]): str(row[2] or "").upper()
+        for row in con.execute("PRAGMA table_info(final_simulation_pr)")
+    }
+    if not types.get("final_pr", "").startswith("INT"):
+        return
+    old_cols = [str(row[1]) for row in con.execute("PRAGMA table_info(final_simulation_pr)")]
+    con.execute("ALTER TABLE final_simulation_pr RENAME TO final_simulation_pr__old")
+    con.execute(CREATE_FINAL_SIMULATION_PR.replace("IF NOT EXISTS ", ""))
+    new_cols = [str(row[1]) for row in con.execute("PRAGMA table_info(final_simulation_pr)")]
+    shared = [col for col in new_cols if col in old_cols]
+    col_sql = ", ".join(shared)
+    con.execute(
+        f"INSERT INTO final_simulation_pr ({col_sql}) "
+        f"SELECT {col_sql} FROM final_simulation_pr__old"
+    )
+    con.execute("DROP TABLE final_simulation_pr__old")
+    con.commit()
 
 
 def _yes(val: Any) -> bool:
@@ -71,6 +97,7 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
     con = sqlite3.connect(DB_PATH)
     try:
         cur = con.cursor()
+        _widen_final_pr(con)
         cur.execute(CREATE_FINAL_SIMULATION_PR)
         cur.execute(
             "DELETE FROM final_simulation_pr WHERE season = ?;",
@@ -80,10 +107,10 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
         cur.execute(query, (source_season, source_season))
         rows_raw = cur.fetchall()
 
-        out: list[tuple[str, str, int, str]] = []
+        out: list[tuple[str, str, float, str]] = []
         for tup in rows_raw:
             pname = str(tup[0]).strip()
-            base = int(tup[1])
+            base = float(tup[1])
             effect_vals = tup[2:]
             applied: list[str] = []
             bonus = 0

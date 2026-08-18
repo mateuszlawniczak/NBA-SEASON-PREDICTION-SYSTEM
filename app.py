@@ -42,6 +42,8 @@ from compute_engine_scores import (
     BACKTEST_SEASONS,
     LOWER_IS_BETTER,
     METRIC_LABELS,
+    TEST_SEASONS,
+    TRAIN_SEASONS,
     _format_metric,
     _winner,
 )
@@ -1411,7 +1413,12 @@ the title. Repeat across many simulations and the frequencies become odds.
         )
  
  
-SCORECARD_SECTIONS = list(BACKTEST_SEASONS) + ["POOLED", "POOLED_NO_1819"]
+SCORECARD_SECTIONS = list(BACKTEST_SEASONS) + [
+    "POOLED",
+    "POOLED_NO_1819",
+    "POOLED_TRAIN",
+]
+HOLDOUT_SECTION = "POOLED_TEST"
 
 _WINNER_COLORS = {
     "engine": "#22c55e",
@@ -1421,12 +1428,31 @@ _WINNER_COLORS = {
 
 
 def _scorecard_section_label(section: str) -> str:
-    """Display label only — the DB keys stay POOLED / POOLED_NO_1819."""
+    """Display label only — the DB keys stay POOLED / POOLED_NO_1819 / TRAIN / TEST."""
     if section == "POOLED":
         return "All seasons (2018-19 →)"
     if section == "POOLED_NO_1819":
         return f"Backtest average ({len(BACKTEST_SEASONS)} seasons)"
+    if section == "POOLED_TRAIN":
+        return f"Train ({len(TRAIN_SEASONS)} seasons)"
+    if section == "POOLED_TEST":
+        return f"Holdout ({len(TEST_SEASONS)} seasons)"
     return _season_display(section)
+
+
+def _holdout_unlocked(key: str) -> bool:
+    """Collapsed-by-default holdout gate. POOLED_TEST stays hidden until opened."""
+    with st.expander("Holdout (unseen seasons)", expanded=False):
+        st.caption(
+            "POOLED_TEST is the holdout — "
+            f"{', '.join(TEST_SEASONS)}. Hidden by default so it is not used "
+            "for model selection."
+        )
+        return st.checkbox(
+            "Show holdout section (POOLED_TEST)",
+            value=False,
+            key=key,
+        )
 
 
 def _winner_cell_style(col: pd.Series) -> list[str]:
@@ -1448,10 +1474,13 @@ def view_me_vs_baseline(col_main, col_filters) -> None:
     with col_filters:
         st.markdown('<div class="eop-eyebrow">Filters</div>', unsafe_allow_html=True)
         with st.container(border=True):
+            section_options = list(SCORECARD_SECTIONS)
+            if _holdout_unlocked("scorecard_show_holdout"):
+                section_options.append(HOLDOUT_SECTION)
             section = st.selectbox(
                 "Season",
-                options=SCORECARD_SECTIONS,
-                index=SCORECARD_SECTIONS.index("POOLED_NO_1819"),
+                options=section_options,
+                index=section_options.index("POOLED_NO_1819"),
                 format_func=_scorecard_section_label,
                 help="Backtest season, or a pooled row across seasons.",
             )
@@ -1699,15 +1728,19 @@ def view_progress(col_main, col_filters) -> None:
         )
         default_original_idx = run_ids.index(default_original)
 
+        section_options = list(SCORECARD_SECTIONS)
+        if _holdout_unlocked("progress_show_holdout"):
+            section_options.append(HOLDOUT_SECTION)
+
         c1, c2, c3 = st.columns(3)
         with c1:
             section = st.selectbox(
                 "Season / section",
-                options=SCORECARD_SECTIONS,
-                index=SCORECARD_SECTIONS.index("POOLED_NO_1819"),
+                options=section_options,
+                index=section_options.index("POOLED_TRAIN"),
                 format_func=_scorecard_section_label,
                 key="progress_section",
-                help="Same sections as Me vs Baseline.",
+                help="Defaults to the train pool. Holdout is behind the expander.",
             )
         with c2:
             best_metric = st.selectbox(

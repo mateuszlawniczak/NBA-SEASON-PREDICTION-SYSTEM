@@ -34,11 +34,11 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8")
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-def fint(v: Any) -> int | None:
+def ffloat(v: Any) -> float | None:
     if v is None:
         return None
     try:
-        return int(round(float(v)))
+        return float(v)
     except (TypeError, ValueError):
         return None
 
@@ -56,17 +56,47 @@ def multiplier_for(playoff_result: str | None, had_team_row: bool) -> float:
     return PLAYOFF_EXPERIENCE_MULTIPLIER[playoff_result]
 
 
+CREATE_EXPERIENCE_PR = """
+CREATE TABLE IF NOT EXISTS player_experience_pr (
+    player_name     TEXT    NOT NULL,
+    season          TEXT    NOT NULL,
+    adjusted_exp_pr REAL    NOT NULL,
+    PRIMARY KEY (player_name, season)
+);
+"""
+
+
 def ensure_table(con: sqlite3.Connection) -> None:
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS player_experience_pr (
-            player_name     TEXT    NOT NULL,
-            season          TEXT    NOT NULL,
-            adjusted_exp_pr INTEGER NOT NULL,
-            PRIMARY KEY (player_name, season)
-        );
-        """
-    )
+    exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='player_experience_pr'"
+    ).fetchone()
+    if exists is not None:
+        types = {
+            str(row[1]): str(row[2] or "").upper()
+            for row in con.execute("PRAGMA table_info(player_experience_pr)")
+        }
+        if types.get("adjusted_exp_pr", "").startswith("INT"):
+            old_cols = [
+                str(row[1])
+                for row in con.execute("PRAGMA table_info(player_experience_pr)")
+            ]
+            con.execute(
+                "ALTER TABLE player_experience_pr RENAME TO player_experience_pr__old"
+            )
+            con.execute(CREATE_EXPERIENCE_PR.replace("IF NOT EXISTS ", ""))
+            new_cols = [
+                str(row[1])
+                for row in con.execute("PRAGMA table_info(player_experience_pr)")
+            ]
+            shared = [col for col in new_cols if col in old_cols]
+            col_sql = ", ".join(shared)
+            con.execute(
+                f"INSERT INTO player_experience_pr ({col_sql}) "
+                f"SELECT {col_sql} FROM player_experience_pr__old"
+            )
+            con.execute("DROP TABLE player_experience_pr__old")
+            con.commit()
+    con.execute(CREATE_EXPERIENCE_PR)
 
 
 def main(source_season: str | None = None, target_season: str | None = None) -> None:
@@ -98,14 +128,14 @@ def main(source_season: str | None = None, target_season: str | None = None) -> 
         )
         rows = cur.fetchall()
 
-        out: list[tuple[str, str, int]] = []
+        out: list[tuple[str, str, float]] = []
         for player_name, projected_pr, playoff_result, joined_team in rows:
-            pr = fint(projected_pr)
+            pr = ffloat(projected_pr)
             if pr is None:
                 raise ValueError(f"Invalid projected_pr for {player_name!r}: {projected_pr!r}")
             had_team_row = joined_team is not None
             mult = multiplier_for(playoff_result, had_team_row)
-            adjusted = int(round(pr * mult))
+            adjusted = pr * mult
             out.append((player_name, source_season, adjusted))
 
         con.execute("BEGIN")

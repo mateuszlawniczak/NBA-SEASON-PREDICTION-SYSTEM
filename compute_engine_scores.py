@@ -28,12 +28,18 @@ from compute_baseline_scores import (
     METRIC_DIRECTION,
     METRIC_LABELS,
     PARTIAL_SEASON,
+    POOLED_SECTIONS,
     SeasonMetrics,
+    TEST_SEASONS,
+    TRAIN_SEASONS,
     _fetch_champion_abbr,
     _fetch_games_played,
     _fetch_team_stats,
     _metrics_to_rows,
+    _pearson_r,
+    _title_rank,
     _top_k_by_prob,
+    _zscore,
     compute_pooled as compute_baseline_pooled,
     compute_season_metrics as compute_baseline_season_metrics,
 )
@@ -71,8 +77,10 @@ CREATE TABLE IF NOT EXISTS run_scores (
     value   REAL NOT NULL,
     PRIMARY KEY (run, season, metric)
 );
+"""
 
-CREATE VIEW IF NOT EXISTS run_vs_baseline AS
+RUN_VS_BASELINE_VIEW_SQL = """
+CREATE VIEW run_vs_baseline AS
 SELECT
     rs.run                  AS run,
     rs.season               AS season,
@@ -82,7 +90,9 @@ SELECT
     rs.value - bs.value     AS diff,
     CASE
         WHEN ABS(rs.value - bs.value) < 1e-9 THEN 'tie'
-        WHEN rs.metric IN ('mae_wins', 'mae_win_pct', 'brier_champion')
+        WHEN rs.metric IN (
+            'mae_wins', 'mae_win_pct', 'brier_champion', 'champion_rank'
+        )
             THEN CASE WHEN rs.value < bs.value THEN 'engine' ELSE 'baseline' END
         ELSE CASE WHEN rs.value > bs.value THEN 'engine' ELSE 'baseline' END
     END                     AS winner
@@ -93,8 +103,9 @@ JOIN baseline_scores bs
 """
 
 SEED_COLS = [f"seed_{i}_pct" for i in range(1, 16)]
-LOWER_IS_BETTER = {"mae_wins", "mae_win_pct", "brier_champion"}
+LOWER_IS_BETTER = {"mae_wins", "mae_win_pct", "brier_champion", "champion_rank"}
 SEED_METRICS = ("seed_accuracy_exact", "seed_accuracy_pm1")
+ORDERING_METRICS = ("win_order_r", "champion_rank")
 EXPECTED_TEAMS_PER_CONFERENCE = 15
 EXPECTED_SNAPSHOT_TEAMS = 30
 
@@ -265,6 +276,8 @@ def compute_season_metrics(
 
     win_errors: list[float] = []
     win_pct_errors: list[float] = []
+    pred_rates: list[float] = []
+    act_rates: list[float] = []
     seed_exact = 0
     seed_pm1 = 0
     playoff_hits = 0
@@ -277,6 +290,8 @@ def compute_season_metrics(
         win_pct_errors.append(
             abs(pred.avg_wins / games_simulated - act.win_pct) * 100.0
         )
+        pred_rates.append(pred.avg_wins / games_simulated)
+        act_rates.append(act.win_pct)
 
         pred_seed = assigned[abbr]
         if act.conference_seed is not None:
@@ -310,6 +325,9 @@ def compute_season_metrics(
         y = 1.0 if actual_champion and abbr == actual_champion else 0.0
         brier_terms.append((p - y) ** 2)
 
+    title_scores = {abbr: preds[abbr].champion_pct for abbr in common_abbrs}
+    champion_rank = _title_rank(title_scores, actual_champion)
+
     n = len(common_abbrs)
     return SeasonMetrics(
         mae_wins=sum(win_errors) / n,
@@ -320,6 +338,8 @@ def compute_season_metrics(
         champion_top1=champion_top1,
         champion_top4=champion_top4,
         brier_champion=sum(brier_terms) / n,
+        win_order_r=_pearson_r(pred_rates, act_rates),
+        champion_rank=champion_rank,
         notes=notes,
     )
 
@@ -330,7 +350,12 @@ def compute_pooled(
     run_id: str = RUN_ID,
     seed_rank_method: str | None = None,
 ) -> SeasonMetrics:
-    """Micro-average for continuous metrics; macro % for champion hits."""
+    """Micro-average for continuous metrics; macro % for champion hits.
+
+    win_order_r is NOT the mean of per-season r: predicted and actual win
+    rates are z-scored within each season, then correlated across the pool.
+    champion_rank is the mean of the per-season ranks.
+    """
     total_abs_error = 0.0
     total_abs_pct_error = 0.0
     total_teams = 0
@@ -342,6 +367,9 @@ def compute_pooled(
     champion_top1_hits = 0
     champion_top4_hits = 0
     n_seasons = len(all_metrics)
+    z_pred: list[float] = []
+    z_act: list[float] = []
+    champion_rank_sum = 0.0
 
     for target, metrics in all_metrics.items():
         preds = _fetch_engine_predictions(con, target, run_id=run_id)
@@ -352,6 +380,8 @@ def compute_pooled(
         assigned = assign_conference_seeds(
             preds, target, method=seed_rank_method
         )
+        pred_rates: list[float] = []
+        act_rates: list[float] = []
 
         for abbr in common_abbrs:
             pred = preds[abbr]
@@ -360,6 +390,8 @@ def compute_pooled(
             total_abs_pct_error += (
                 abs(pred.avg_wins / games_simulated - act.win_pct) * 100.0
             )
+            pred_rates.append(pred.avg_wins / games_simulated)
+            act_rates.append(act.win_pct)
 
             pred_seed = assigned[abbr]
             if act.conference_seed is not None:
@@ -374,6 +406,9 @@ def compute_pooled(
                 playoff_hits += 1
             total_teams += 1
 
+        z_pred.extend(_zscore(pred_rates))
+        z_act.extend(_zscore(act_rates))
+        champion_rank_sum += metrics.champion_rank
         brier_sum += metrics.brier_champion * len(common_abbrs)
 
         if metrics.champion_top1 >= 100.0:
@@ -393,6 +428,8 @@ def compute_pooled(
         champion_top1=(100.0 * champion_top1_hits / n_seasons) if n_seasons else 0.0,
         champion_top4=(100.0 * champion_top4_hits / n_seasons) if n_seasons else 0.0,
         brier_champion=brier_sum / total_teams if total_teams else 0.0,
+        win_order_r=_pearson_r(z_pred, z_act) if z_pred else 0.0,
+        champion_rank=(champion_rank_sum / n_seasons) if n_seasons else 0.0,
         notes=f"pooled over {n_seasons} seasons ({season_list}); run_id={run_id}",
     )
 
@@ -402,7 +439,11 @@ def compute_all_sections(
     run_id: str = RUN_ID,
     seed_rank_method: str | None = None,
 ) -> dict[str, SeasonMetrics]:
-    """Per-season + POOLED + POOLED_NO_1819 metrics for one prediction snapshot."""
+    """Per-season + all pooled sections for one prediction snapshot.
+
+    Each pooled section is computed from the underlying team-seasons via
+    compute_pooled (not by averaging season-level metric values).
+    """
     season_metrics: dict[str, SeasonMetrics] = {}
     for season in ALL_SEASONS:
         notes = "caveated / partial data" if season == PARTIAL_SEASON else ""
@@ -433,10 +474,28 @@ def compute_all_sections(
         f"pooled over {len(BACKTEST_SEASONS)} full seasons "
         f"({backtest_list}); run_id={run_id}"
     )
+    train = {s: m for s, m in season_metrics.items() if s in TRAIN_SEASONS}
+    test = {s: m for s, m in season_metrics.items() if s in TEST_SEASONS}
+    pooled_train = compute_pooled(
+        con, train, run_id=run_id, seed_rank_method=seed_rank_method
+    )
+    pooled_test = compute_pooled(
+        con, test, run_id=run_id, seed_rank_method=seed_rank_method
+    )
+    pooled_train.notes = (
+        f"pooled over {len(TRAIN_SEASONS)} train seasons "
+        f"({', '.join(TRAIN_SEASONS)}); run_id={run_id}"
+    )
+    pooled_test.notes = (
+        f"pooled over {len(TEST_SEASONS)} holdout seasons "
+        f"({', '.join(TEST_SEASONS)}); run_id={run_id}"
+    )
     return {
         **season_metrics,
         "POOLED": pooled,
         "POOLED_NO_1819": pooled_no_partial,
+        "POOLED_TRAIN": pooled_train,
+        "POOLED_TEST": pooled_test,
     }
 
 
@@ -459,8 +518,18 @@ def count_duplicate_seed_assignments(
     return total
 
 
-def _snapshot_skip_reason(con: sqlite3.Connection, run_id: str) -> str | None:
-    """None if the frozen snapshot is complete; otherwise why to skip."""
+def _snapshot_skip_reason(
+    con: sqlite3.Connection,
+    run_id: str,
+    seasons: list[str] | None = None,
+) -> str | None:
+    """None if the frozen snapshot is complete; otherwise why to skip.
+
+    When `seasons` is set, only those seasons are required (extra seasons in
+    the snapshot are allowed). The default still requires every ALL_SEASONS
+    row and rejects unexpected seasons.
+    """
+    needed = list(seasons) if seasons is not None else list(ALL_SEASONS)
     rows = con.execute(
         """
         SELECT season, COUNT(*) AS n, COUNT(DISTINCT team) AS teams
@@ -473,28 +542,32 @@ def _snapshot_skip_reason(con: sqlite3.Connection, run_id: str) -> str | None:
     if not rows:
         return "no snapshot in simulation_results"
     by_season = {season: (n, teams) for season, n, teams in rows}
-    missing = [season for season in ALL_SEASONS if season not in by_season]
+    missing = [season for season in needed if season not in by_season]
     if missing:
         return f"missing season(s): {', '.join(missing)}"
-    extra = sorted(set(by_season) - set(ALL_SEASONS))
-    if extra:
-        return f"unexpected season(s): {', '.join(extra)}"
+    if seasons is None:
+        extra = sorted(set(by_season) - set(ALL_SEASONS))
+        if extra:
+            return f"unexpected season(s): {', '.join(extra)}"
     incomplete = [
         f"{season} has {n} row(s)/{teams} team(s), expected "
         f"{EXPECTED_SNAPSHOT_TEAMS}"
-        for season, (n, teams) in by_season.items()
+        for season in needed
+        for n, teams in [by_season[season]]
         if n != EXPECTED_SNAPSHOT_TEAMS or teams != EXPECTED_SNAPSHOT_TEAMS
     ]
     if incomplete:
         return "incomplete: " + "; ".join(incomplete)
     seed_null_sql = " OR ".join(f"{col} IS NULL" for col in SEED_COLS)
+    placeholders = ", ".join("?" for _ in needed)
     nulls = con.execute(
         f"""
         SELECT COUNT(1) FROM simulation_results
         WHERE run_id = ?
+          AND season IN ({placeholders})
           AND (avg_wins IS NULL OR {seed_null_sql})
         """,
-        (run_id,),
+        (run_id, *needed),
     ).fetchone()[0]
     if nulls:
         return f"{nulls} row(s) missing avg_wins or a seed_i_pct column"
@@ -624,11 +697,295 @@ def rescore_historical_seed_metrics() -> None:
     )
 
 
+def _refresh_run_vs_baseline_view(con: sqlite3.Connection) -> None:
+    """Recreate the view so newly registered lower-is-better metrics apply.
+
+    Uses single-statement execute (not executescript) so it is safe inside
+    an open transaction.
+    """
+    con.execute("DROP VIEW IF EXISTS run_vs_baseline")
+    con.execute(RUN_VS_BASELINE_VIEW_SQL)
+
+
+def backfill_historical_ordering_metrics() -> None:
+    """INSERT win_order_r and champion_rank into run_scores for each snapshot.
+
+    Addition only: existing run_scores rows are never updated or deleted.
+    Incomplete snapshots are skipped and reported.
+    """
+    con = sqlite3.connect(DB_PATH, isolation_level=None)
+    skipped: list[tuple[int, str]] = []
+    inserted: list[tuple[int, str, str, float]] = []
+    before_all: dict[tuple[int, str, str], float] = {}
+    try:
+        run_ids = [
+            int(row[0]) for row in con.execute("SELECT id FROM runs ORDER BY id")
+        ]
+        for row in con.execute("SELECT run, season, metric, value FROM run_scores"):
+            before_all[(int(row[0]), str(row[1]), str(row[2]))] = float(row[3])
+
+        con.executescript(CREATE_HISTORY_SQL)
+        con.execute("BEGIN IMMEDIATE")
+        _refresh_run_vs_baseline_view(con)
+        for run in run_ids:
+            tag = str(run)
+            reason = _snapshot_skip_reason(con, tag)
+            if reason:
+                skipped.append((run, reason))
+                continue
+            sections = compute_all_sections(con, run_id=tag)
+            for season, metrics in sections.items():
+                for metric in ORDERING_METRICS:
+                    key = (run, season, metric)
+                    new_val = float(getattr(metrics, metric))
+                    if key in before_all:
+                        if before_all[key] != new_val:
+                            raise RuntimeError(
+                                f"run {run} {season} {metric}: row already "
+                                f"exists with value {before_all[key]!r}, "
+                                f"computed {new_val!r}."
+                            )
+                        continue
+                    con.execute(
+                        "INSERT INTO run_scores (run, season, metric, value) "
+                        "VALUES (?, ?, ?, ?)",
+                        (run, season, metric, new_val),
+                    )
+                    inserted.append((run, season, metric, new_val))
+        con.execute("COMMIT")
+
+        after_all = {
+            (int(row[0]), str(row[1]), str(row[2])): float(row[3])
+            for row in con.execute(
+                "SELECT run, season, metric, value FROM run_scores"
+            )
+        }
+    except Exception:
+        if con.in_transaction:
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()
+
+    print("\n=== Historical ordering-metric backfill (run_scores) ===\n")
+    if skipped:
+        print("Skipped:")
+        for run, reason in skipped:
+            print(f"  run {run}: {reason}")
+    else:
+        print("Skipped: none")
+
+    print(f"\nInserted {len(inserted)} row(s).")
+    print(
+        f"{'run':>4}  {'section':<16}  {'metric':<16}  {'value':>10}"
+    )
+    for run, season, metric, value in inserted:
+        print(f"{run:4d}  {season:<16}  {metric:<16}  {value:10.6f}")
+
+    moved = [
+        (key, before_all[key], after_all[key])
+        for key in before_all
+        if before_all[key] != after_all.get(key)
+    ]
+    missing = [key for key in before_all if key not in after_all]
+    extra = [
+        key
+        for key in after_all
+        if key not in before_all and key[2] not in ORDERING_METRICS
+    ]
+    if moved or extra or missing:
+        raise RuntimeError(
+            f"existing run_scores changed: moved={moved} extra={extra} "
+            f"missing={missing}"
+        )
+    print(f"\nExisting run_scores values: unchanged ({len(before_all)} rows).")
+
+
+HOLDOUT_SECTIONS = ("POOLED_TRAIN", "POOLED_TEST")
+# Pooled values that are defined only from per-season metric values, so they
+# can be rebuilt when a frozen snapshot is missing. Everything else needs
+# team-season predictions (micro-average or a pooled Pearson r).
+HOLDOUT_RECONSTRUCTABLE = ("champion_top1", "champion_top4", "champion_rank")
+
+
+def _pooled_from_season_rows(
+    per_season: dict[str, dict[str, float]],
+    seasons: list[str],
+    metric: str,
+) -> float | None:
+    """Exact reconstruction from stored per-season rows, or None.
+
+    champion_top1 / champion_top4: macro % (share of seasons with a hit).
+    champion_rank: mean of the per-season ranks.
+    """
+    if metric not in HOLDOUT_RECONSTRUCTABLE:
+        return None
+    values: list[float] = []
+    for season in seasons:
+        if season not in per_season or metric not in per_season[season]:
+            return None
+        values.append(per_season[season][metric])
+    if not values:
+        return None
+    if metric in ("champion_top1", "champion_top4"):
+        hits = sum(1 for value in values if value >= 100.0)
+        return 100.0 * hits / len(values)
+    return sum(values) / len(values)
+
+
+def backfill_holdout_sections() -> None:
+    """INSERT POOLED_TRAIN / POOLED_TEST into run_scores for every run.
+
+    Complete snapshots are rescored from team predictions. Missing snapshots
+    get only the metrics that reconstruct exactly from stored per-season
+    rows; the rest are skipped with a warning. Existing rows are never
+    updated or deleted.
+    """
+    con = sqlite3.connect(DB_PATH, isolation_level=None)
+    skipped_metrics: list[tuple[int, str, str]] = []
+    inserted: list[tuple[int, str, str, float]] = []
+    before_all: dict[tuple[int, str, str], float] = {}
+    try:
+        run_ids = [
+            int(row[0]) for row in con.execute("SELECT id FROM runs ORDER BY id")
+        ]
+        for row in con.execute("SELECT run, season, metric, value FROM run_scores"):
+            before_all[(int(row[0]), str(row[1]), str(row[2]))] = float(row[3])
+
+        con.executescript(CREATE_HISTORY_SQL)
+        con.execute("BEGIN IMMEDIATE")
+        _refresh_run_vs_baseline_view(con)
+        for run in run_ids:
+            tag = str(run)
+            stored: dict[str, dict[str, float]] = {}
+            for season, metric, value in con.execute(
+                "SELECT season, metric, value FROM run_scores WHERE run = ?",
+                (run,),
+            ):
+                stored.setdefault(str(season), {})[str(metric)] = float(value)
+
+            snapshot_reason = _snapshot_skip_reason(
+                con, tag, seasons=TRAIN_SEASONS + TEST_SEASONS
+            )
+            if snapshot_reason is None:
+                sections = compute_all_sections(con, run_id=tag)
+                for section in HOLDOUT_SECTIONS:
+                    metrics = sections.get(section)
+                    if metrics is None:
+                        for metric in METRIC_LABELS:
+                            skipped_metrics.append((run, section, metric))
+                            print(
+                                f"[warn] run {run} {section} {metric}: "
+                                "section missing after recompute; skipped."
+                            )
+                        continue
+                    for metric in METRIC_LABELS:
+                        key = (run, section, metric)
+                        new_val = float(getattr(metrics, metric))
+                        if key in before_all:
+                            if before_all[key] != new_val:
+                                raise RuntimeError(
+                                    f"run {run} {section} {metric}: row already "
+                                    f"exists with value {before_all[key]!r}, "
+                                    f"computed {new_val!r}."
+                                )
+                            continue
+                        con.execute(
+                            "INSERT INTO run_scores (run, season, metric, value) "
+                            "VALUES (?, ?, ?, ?)",
+                            (run, section, metric, new_val),
+                        )
+                        inserted.append((run, section, metric, new_val))
+                continue
+
+            print(
+                f"[warn] run {run}: no usable snapshot ({snapshot_reason}); "
+                "reconstructing only exact per-season metrics."
+            )
+            for section, seasons in (
+                ("POOLED_TRAIN", TRAIN_SEASONS),
+                ("POOLED_TEST", TEST_SEASONS),
+            ):
+                for metric in METRIC_LABELS:
+                    key = (run, section, metric)
+                    rebuilt = _pooled_from_season_rows(stored, seasons, metric)
+                    if rebuilt is None:
+                        skipped_metrics.append((run, section, metric))
+                        print(
+                            f"[warn] run {run} {section} {metric}: not exactly "
+                            "reconstructable from stored per-season rows; skipped."
+                        )
+                        continue
+                    if key in before_all:
+                        if before_all[key] != rebuilt:
+                            raise RuntimeError(
+                                f"run {run} {section} {metric}: row already "
+                                f"exists with value {before_all[key]!r}, "
+                                f"reconstructed {rebuilt!r}."
+                            )
+                        continue
+                    con.execute(
+                        "INSERT INTO run_scores (run, season, metric, value) "
+                        "VALUES (?, ?, ?, ?)",
+                        (run, section, metric, rebuilt),
+                    )
+                    inserted.append((run, section, metric, rebuilt))
+        con.execute("COMMIT")
+
+        after_all = {
+            (int(row[0]), str(row[1]), str(row[2])): float(row[3])
+            for row in con.execute(
+                "SELECT run, season, metric, value FROM run_scores"
+            )
+        }
+    except Exception:
+        if con.in_transaction:
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()
+
+    print("\n=== Holdout-section backfill (run_scores) ===\n")
+    print(f"Inserted {len(inserted)} row(s).")
+    print(f"{'run':>4}  {'section':<16}  {'metric':<22}  {'value':>10}")
+    for run, season, metric, value in inserted:
+        print(f"{run:4d}  {season:<16}  {metric:<22}  {value:10.6f}")
+
+    if skipped_metrics:
+        print(f"\nSkipped {len(skipped_metrics)} run/section/metric(s):")
+        for run, section, metric in skipped_metrics:
+            print(f"  run {run} {section} {metric}")
+    else:
+        print("\nSkipped metrics: none")
+
+    moved = [
+        (key, before_all[key], after_all[key])
+        for key in before_all
+        if before_all[key] != after_all.get(key)
+    ]
+    missing = [key for key in before_all if key not in after_all]
+    extra = [
+        key
+        for key in after_all
+        if key not in before_all and key[1] not in HOLDOUT_SECTIONS
+    ]
+    if moved or extra or missing:
+        raise RuntimeError(
+            f"existing run_scores changed: moved={moved} extra={extra} "
+            f"missing={missing}"
+        )
+    print(
+        f"\nExisting run_scores values: unchanged ({len(before_all)} rows). "
+        f"Rows moved: {len(moved)}."
+    )
+
+
 def write_engine_scores(rows: list[tuple[str, str, float, str]]) -> None:
     con = sqlite3.connect(DB_PATH)
     try:
         con.execute("PRAGMA foreign_keys = ON;")
         con.execute(CREATE_TABLE_SQL)
+        _refresh_run_vs_baseline_view(con)
         con.execute("DELETE FROM engine_scores")
         con.executemany(
             "INSERT INTO engine_scores (season, metric, value, notes) VALUES (?, ?, ?, ?)",
@@ -662,8 +1019,8 @@ def _seasons_label() -> str:
 
 
 def _expected_score_rows() -> int:
-    """Every scored section times every metric; 10 x 8 = 80 today."""
-    return (len(ALL_SEASONS) + 2) * len(METRIC_LABELS)
+    """Every scored section times every metric."""
+    return (len(ALL_SEASONS) + len(POOLED_SECTIONS)) * len(METRIC_LABELS)
 
 
 def _snapshot_predictions(con: sqlite3.Connection, run: int) -> int:
@@ -776,7 +1133,8 @@ def log_run(note: str, rows: list[tuple[str, str, float, str]]) -> int:
     expected = _expected_score_rows()
     if len(rows) != expected:
         raise RuntimeError(
-            f"expected {expected} score values ({len(ALL_SEASONS) + 2} sections "
+            f"expected {expected} score values "
+            f"({len(ALL_SEASONS) + len(POOLED_SECTIONS)} sections "
             f"x {len(METRIC_LABELS)} metrics) but got {len(rows)}; refusing to log."
         )
 
@@ -785,8 +1143,8 @@ def log_run(note: str, rows: list[tuple[str, str, float, str]]) -> int:
     appended = False
     try:
         con.executescript(CREATE_HISTORY_SQL)
-
         con.execute("BEGIN IMMEDIATE")
+        _refresh_run_vs_baseline_view(con)
         cursor = con.execute(
             "INSERT INTO runs (created_at, note, seasons, git_commit) "
             "VALUES (datetime('now'), ?, ?, ?)",
@@ -870,6 +1228,10 @@ def _format_metric(key: str, value: float) -> str:
         return f"{value:.2f}"
     if key == "brier_champion":
         return f"{value:.4f}"
+    if key == "win_order_r":
+        return f"{value:.3f}"
+    if key == "champion_rank":
+        return f"{value:.2f}"
     return f"{value:.1f}"
 
 
@@ -899,6 +1261,10 @@ def print_comparison(
             label = f"{section}* (caveated / partial data)"
         elif section == "POOLED_NO_1819":
             label = "POOLED (excl. 2018-19)"
+        elif section == "POOLED_TRAIN":
+            label = f"POOLED_TRAIN ({', '.join(TRAIN_SEASONS)})"
+        elif section == "POOLED_TEST":
+            label = f"POOLED_TEST holdout ({', '.join(TEST_SEASONS)})"
 
         print(f"--- {label} ---")
         header = (
@@ -950,6 +1316,20 @@ def main(note: str | None = None) -> None:
         baseline_scores["POOLED_NO_1819"] = {
             k: _metric_value(baseline_pooled_no_partial, k) for k in METRIC_LABELS
         }
+        baseline_train = {
+            s: m for s, m in baseline_backtest_metrics.items() if s in TRAIN_SEASONS
+        }
+        baseline_test = {
+            s: m for s, m in baseline_backtest_metrics.items() if s in TEST_SEASONS
+        }
+        baseline_pooled_train = compute_baseline_pooled(con, baseline_train)
+        baseline_pooled_test = compute_baseline_pooled(con, baseline_test)
+        baseline_scores["POOLED_TRAIN"] = {
+            k: _metric_value(baseline_pooled_train, k) for k in METRIC_LABELS
+        }
+        baseline_scores["POOLED_TEST"] = {
+            k: _metric_value(baseline_pooled_test, k) for k in METRIC_LABELS
+        }
     finally:
         con.close()
 
@@ -966,16 +1346,20 @@ def main(note: str | None = None) -> None:
     season_metrics = {
         season: metrics
         for season, metrics in sections.items()
-        if season not in ("POOLED", "POOLED_NO_1819")
+        if season not in POOLED_SECTIONS
     }
     pooled = sections["POOLED"]
     pooled_no_partial = sections["POOLED_NO_1819"]
+    pooled_train = sections["POOLED_TRAIN"]
+    pooled_test = sections["POOLED_TEST"]
 
     rows: list[tuple[str, str, float, str]] = []
     for season, metrics in season_metrics.items():
         rows.extend(_metrics_to_rows(season, metrics))
     rows.extend(_metrics_to_rows("POOLED", pooled))
     rows.extend(_metrics_to_rows("POOLED_NO_1819", pooled_no_partial))
+    rows.extend(_metrics_to_rows("POOLED_TRAIN", pooled_train))
+    rows.extend(_metrics_to_rows("POOLED_TEST", pooled_test))
 
     write_engine_scores(rows)
 
@@ -985,10 +1369,12 @@ def main(note: str | None = None) -> None:
             **season_metrics,
             "POOLED": pooled,
             "POOLED_NO_1819": pooled_no_partial,
+            "POOLED_TRAIN": pooled_train,
+            "POOLED_TEST": pooled_test,
         }.items()
     }
 
-    sections = ALL_SEASONS + ["POOLED", "POOLED_NO_1819"]
+    sections = ALL_SEASONS + list(POOLED_SECTIONS)
     print_comparison(baseline_scores, engine_scores, sections)
     print(f"Wrote {len(rows)} rows to engine_scores in {DB_PATH}")
 
@@ -1029,6 +1415,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "from each complete frozen snapshot. Other metrics are untouched."
         ),
     )
+    parser.add_argument(
+        "--backfill-ordering-metrics",
+        action="store_true",
+        help=(
+            "INSERT win_order_r and champion_rank into run_scores for each "
+            "complete frozen snapshot. Existing rows are never updated."
+        ),
+    )
+    parser.add_argument(
+        "--backfill-holdout-sections",
+        action="store_true",
+        help=(
+            "INSERT POOLED_TRAIN and POOLED_TEST into run_scores for each "
+            "run. Existing rows are never updated."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -1050,6 +1452,22 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
         sys.exit(2)
+    if args.backfill_ordering_metrics and args.note is not None:
+        print(
+            "[error] --backfill-ordering-metrics cannot be combined with --note.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if args.backfill_holdout_sections and args.note is not None:
+        print(
+            "[error] --backfill-holdout-sections cannot be combined with --note.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     if args.rescore_history:
         rescore_historical_seed_metrics()
+    if args.backfill_ordering_metrics:
+        backfill_historical_ordering_metrics()
+    if args.backfill_holdout_sections:
+        backfill_holdout_sections()
     main(note=args.note)
